@@ -375,6 +375,63 @@ Several existing projects occupy adjacent space and should be monitored:
 
 ---
 
+## [19] MINJA: A Practical Memory Injection Attack against LLM Agents
+
+**Authors:** Anonymous / Researcher team
+**ArXiv:** [2503.03704](https://arxiv.org/abs/2503.03704) (Mar 2025)
+
+### Summary
+
+MINJA demonstrates that an adversary can poison a shared agent memory system **without any direct access to the memory store** — using only normal query interactions. The attack has three stages: (1) *Bridging steps* — the attacker crafts a malicious reasoning chain that connects a likely future victim query to a harmful conclusion; (2) *Indication prompts* — the attacker sends queries that cause the agent to store the malicious chain as a memory record; (3) *Progressive shortening* — the explicit attack prompts are gradually removed so the stored record appears benign. When a victim later queries the system with a matching term, the poisoned record is retrieved and the agent follows the malicious reasoning. Success rates exceed 95% across healthcare and web-automation task domains.
+
+### Threat to Engram
+
+Engram's shared memory is a textbook target for MINJA-style attacks. Any agent (or external actor impersonating an agent) can call `engram_commit` with carefully crafted `content` that looks like a legitimate fact but is semantically optimized to be retrieved by future queries and steer subsequent agents toward wrong conclusions. Because Engram's conflict detection only checks for *contradictions*, it will not flag a fact that is internally coherent but subtly false. There is currently no write-admission gate, no content anomaly detection, no rate-limiting per agent, and no cryptographic signing of committed facts. The append-only design means a poisoned fact, once committed, is permanent. A "source integrity" metric — tracking how many independent agents corroborate a fact vs. how many derive from a single agent — should be added to the scoring function.
+
+---
+
+## [20] SQLite WAL Mode: Single-Writer Serialization Under Concurrent Agent Load
+
+**Source:** SQLite official documentation; "SQLite and Concurrent Writes" analysis by berthub.eu and tenthousandmeters.com (2024–2025)
+
+### Summary
+
+SQLite in WAL mode (Write-Ahead Logging) allows unlimited concurrent *readers* but enforces a **global single-writer lock**: regardless of the number of processes or async tasks, all write operations are serialized through a single mutex. In multi-process deployments, write contention manifests as `SQLITE_BUSY` errors. A particularly dangerous failure pattern occurs when a transaction begins as a read (`BEGIN`), performs a `SELECT`, and then attempts an upgrade to a write (`INSERT`/`UPDATE`): if another writer has acquired the lock in the interim, the upgrade fails and must restart. In agentic systems where LLM inference (multiple seconds) occurs between a read and its dependent write — a common pattern in Engram's conflict pipeline — this window of lock contention is wide rather than narrow.
+
+### Threat to Engram
+
+Engram's conflict detection pipeline (Phase 3) has a critical read-then-write pattern: it reads candidate facts, calls an LLM to check for contradictions (which takes 1–5 seconds), and then writes a conflict record. Under concurrent agent commits from multiple engineers, this multi-second LLM call will hold an open transaction or cause repeated `SQLITE_BUSY` retries. The implementation plan mentions atomic transactions for the `superseded_by` update but does not address the broader write-contention problem across the full conflict pipeline. **Concrete risks:** (a) under load, `engram_commit` latency spikes to seconds; (b) without `PRAGMA busy_timeout`, writes will fail immediately with `SQLITE_BUSY` rather than retrying; (c) the WAL file can grow unboundedly if frequent long-read transactions ("checkpoint starvation") prevent checkpointing. The implementation should explicitly set `PRAGMA busy_timeout`, use `BEGIN IMMEDIATE` for all write transactions, perform LLM calls *outside* of open transactions, and include monitoring for WAL file size. Long-term scaling (>10 concurrent engineers) will likely require migrating write coordination to a centralized writer process or switching to PostgreSQL.
+
+---
+
+## [21] Silent Index Corruption from Embedding Model Upgrades
+
+**Sources:** "On the Theoretical Limitations of Embedding-Based Retrieval" (arXiv, 2025), production RAG engineering reports (Weaviate, Medium, Reddit, 2024–2025)
+
+### Summary
+
+When the model used to encode stored embeddings is upgraded — even a minor version change — the geometry of the vector space changes. Old stored embeddings and new query embeddings live in **incompatible coordinate systems**. Crucially, the system does not error: it silently returns lower-quality or semantically incorrect results. This "silent degradation" is one of the most common production failures in RAG systems. Partial re-embedding (indexing new documents with the new model while leaving old ones in the original space) is especially dangerous: retrieval becomes unpredictable because the same index contains two incompatible coordinate systems. Studies show that relevance scores drop dramatically and top-k hits are often semantically wrong, but users and agents receive no signal that anything is wrong.
+
+### Threat to Engram
+
+Engram stores `embedding BLOB` directly in the SQLite `facts` table as serialized `float32` vectors. There is no metadata recording *which embedding model and version* produced each vector. If a user upgrades `all-MiniLM-L6-v2` to a newer `sentence-transformers` release, or switches to a better model (e.g., `all-mpnet-base-v2`), all queries will generate vectors in a different space from the stored ones. `engram_query` will continue to return results — with confidently-scored similarity values — but those results will be semantically meaningless. The conflict detection pipeline will also silently fail: candidate retrieval will miss real contradictions because old and new embeddings are incommensurable. **Mitigations required:** (a) Store `embedding_model` and `embedding_model_version` alongside every fact; (b) Add an admin command `engram reindex --model NEW_MODEL` that re-embeds all facts and updates the stored blobs; (c) Raise a startup warning if the configured model differs from the model recorded in the most recent facts.
+
+---
+
+## [22] LLM Self-Reported Confidence is Systematically Overconfident
+
+**Sources:** "Holistic Trajectory Calibration for LLM Agents" (arXiv, 2025); "LLM Confidence Calibration Survey" (arXiv, 2025); NeurIPS 2024 calibration workshop papers
+
+### Summary
+
+All major LLMs exhibit systematic overconfidence: their self-reported or behavior-derived confidence estimates substantially overstate their actual accuracy. This effect intensifies in multi-step agentic contexts, where errors compound over trajectories. Post-training alignment (RLHF) further inflates confidence by incentivizing "decisive" answers. Studies measuring calibration — how well reported confidence correlates with empirical accuracy — consistently find gaps of 15–40 percentage points. LLMs also exhibit "heightened suggestibility": they will absorb incorrect facts from their context and then report high confidence in those facts in subsequent queries, creating a dangerous loop when operating against a shared memory store.
+
+### Threat to Engram
+
+Engram's schema includes a `confidence REAL NOT NULL` field described as "agent-reported, 0.0–1.0." This value is used in: (a) conflict severity classification (high-confidence facts from two different engineers = high severity); (b) conflict resolution (higher-confidence fact wins); (c) query scoring in Phase 8's proposed "agent reliability" signal (MMA). But if LLMs systematically report high confidence — as the literature shows — then: the severity classifier will fire "high" for nearly every cross-agent conflict (inflating the conflict queue); the higher-confidence-wins resolution strategy will be effectively random (since both facts will report near-1.0 confidence); and the agent reliability score will be flat and uninformative. The implementation must treat agent-reported confidence as a noisy signal, not a ground truth. **Mitigations:** (a) Normalize confidence using historical calibration per agent (divide reported confidence by that agent's empirical contradiction rate); (b) Add a `confidence_source` field distinguishing agent-self-reported vs. system-computed; (c) Make the severity classifier primarily dependent on structural signals (same vs. different engineer, scope overlap) rather than confidence values.
+
+---
+
 ## Revised Landscape at a Glance
 
 | Paper/System | Scope | Consistency | Conflict Detection | Threat Level to Engram |

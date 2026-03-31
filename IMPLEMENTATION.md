@@ -38,23 +38,26 @@ Informed by A-Mem's note structure and Yu et al.'s consistency model requirement
 
 ```sql
 CREATE TABLE facts (
-    id            TEXT PRIMARY KEY,       -- uuid
-    content       TEXT NOT NULL,          -- the raw fact as committed by the agent
-    content_hash  TEXT NOT NULL,          -- SHA-256 of normalized content, for dedup
-    scope         TEXT NOT NULL,          -- e.g. "auth", "payments/webhooks", "infra"
-    confidence    REAL NOT NULL,          -- 0.0–1.0, agent-reported
-    agent_id      TEXT NOT NULL,          -- which agent committed this
-    engineer      TEXT,                   -- human owner of the agent session
-    keywords      TEXT,                   -- JSON array, LLM-generated
-    tags          TEXT,                   -- JSON array, LLM-generated
-    summary       TEXT,                   -- one-sentence LLM-generated description
-    entities      TEXT,                   -- JSON array of extracted entities (services, APIs, config keys, numbers)
-    embedding     BLOB,                   -- float32 vector, serialized
-    committed_at  TEXT NOT NULL,          -- ISO8601 timestamp
-    version       INTEGER NOT NULL DEFAULT 1,
-    superseded_by TEXT,                   -- id of newer fact, null if current
-    source_fact_id TEXT,                  -- if this fact was derived from another, link to origin
-    utility_score REAL DEFAULT 1.0       -- decayed utility for consolidation (see Phase 3b)
+    id                   TEXT PRIMARY KEY,  -- uuid
+    content              TEXT NOT NULL,     -- the raw fact as committed by the agent
+    content_hash         TEXT NOT NULL,     -- SHA-256 of normalized content, for dedup
+    scope                TEXT NOT NULL,     -- e.g. "auth", "payments/webhooks", "infra"
+    confidence           REAL NOT NULL,     -- 0.0–1.0, agent-reported (treat as noisy signal)
+    confidence_source    TEXT NOT NULL DEFAULT 'agent',  -- "agent" | "system" | "calibrated"
+    agent_id             TEXT NOT NULL,     -- which agent committed this
+    engineer             TEXT,              -- human owner of the agent session
+    keywords             TEXT,              -- JSON array, LLM-generated
+    tags                 TEXT,              -- JSON array, LLM-generated
+    summary              TEXT,              -- one-sentence LLM-generated description
+    entities             TEXT,              -- JSON array of extracted entities (services, APIs, config keys, numbers)
+    embedding            BLOB,              -- float32 vector, serialized
+    embedding_model      TEXT NOT NULL,     -- e.g. "all-MiniLM-L6-v2"
+    embedding_model_ver  TEXT NOT NULL,     -- e.g. "2.3.1" from sentence-transformers
+    committed_at         TEXT NOT NULL,     -- ISO8601 timestamp
+    version              INTEGER NOT NULL DEFAULT 1,
+    superseded_by        TEXT,              -- id of newer fact, null if current
+    source_fact_id       TEXT,              -- if this fact was derived from another, link to origin
+    utility_score        REAL DEFAULT 1.0   -- decayed utility for consolidation (see Phase 3b)
 );
 
 CREATE INDEX idx_facts_content_hash ON facts(content_hash);
@@ -486,7 +489,7 @@ He et al. [5] prove that pairwise consistency checks are insufficient — three 
 
 ## Failure Modes & Architectural Mitigations
 
-Based on adversarial literature review (see LITERATURE.md §5–18) and analysis of multi-agent memory constraints, the following failure modes have been identified and addressed:
+Based on adversarial literature review (see LITERATURE.md §5–22) and analysis of multi-agent memory constraints, the following failure modes have been identified and addressed:
 
 **1. The "Blind Read" (Stale Facts / Knowledge Decay)**
 - *Failure Mode:* Vector databases natively treat all stored records as equally valid. An agent might query a fact that is currently disputed by another agent, and unknowingly use it as ground truth.
@@ -535,6 +538,18 @@ Based on adversarial literature review (see LITERATURE.md §5–18) and analysis
 **12. Numeric and Temporal Contradiction Blindness** — from [13]
 - *Failure Mode:* "The rate limit is 100 req/s" vs. "The rate limit is 1000 req/s" — an order-of-magnitude contradiction — will likely be missed because embeddings are similar and LLMs systematically fail on numeric comparison. Temporal contradictions ("deprecated since v3" vs. "still supported in v4") require anchor resolution.
 - *Mitigation:* Deterministic numeric/temporal pre-checks in Phase 3, Step 2 extract and compare values before the LLM is invoked. The `entities` field stores extracted numeric values with units for structured comparison.
+
+**13. Memory Injection / Poisoning (MINJA-style attacks)** *(New — from arXiv:2503.03704 [19])*
+- *Failure Mode:* An adversary calls `engram_commit` with content that appears legitimate but is semantically crafted to be retrieved by future queries and steer subsequent agents toward harmful or incorrect conclusions. The attack requires no special access — only normal agent interactions. Conflict detection cannot catch this because the poisoned fact is internally coherent (it doesn't contradict anything; it simply asserts something false). The append-only design makes the committed fact permanent. Success rates for MINJA-style attacks exceed 95%.
+- *Mitigation:* (a) Add a `source_corroboration` count to `engram_query` results: facts corroborated by ≥2 *independent* agents (different `engineer` field) score higher; single-source facts in sensitive scopes are flagged. (b) Rate-limit `engram_commit` per `agent_id` to prevent bulk injection (default: 100 commits/hour). (c) For sensitive scopes (`infra/*`, `auth/*`, `secrets/*`), require a quorum of ≥2 engineers before a fact is indexed as current. (d) Track `source_fact_id` so derivation chains can be audited — a cluster of facts all derived from one unverified source is a poisoning signal.
+
+**14. Silent Retrieval Corruption from Embedding Model Upgrade** *(New — from production RAG research [21])*
+- *Failure Mode:* When `all-MiniLM-L6-v2` is upgraded or swapped for another model, stored embedding BLOBs are in an incompatible vector space. `engram_query` continues to return results with seemingly valid similarity scores, but the rankings are semantically meaningless. The conflict detection pipeline silently stops finding candidates across the version boundary. Users get no error — just silently wrong answers. The schema previously had no way to detect this had happened.
+- *Mitigation:* (a) `embedding_model` and `embedding_model_ver` are now stored with every fact (added to schema). (b) At startup, validate the configured model against the model in the most recent facts; emit a warning and refuse to serve if they differ without explicit `--force-mismatch`. (c) Implement `engram reindex --model NEW_MODEL` to atomically re-embed all facts. (d) Before any embedding-model upgrade, document the reindex procedure in the ops runbook.
+
+**15. Confidence Field Inflation (LLM Calibration Failure)** *(New — from calibration research [22])*
+- *Failure Mode:* LLMs systematically report near-maximum confidence regardless of epistemic state (calibration gap of 15–40 percentage points). Engram uses `confidence` for severity classification, resolution priority, and agent reliability scoring. With uniformly high confidence, the severity classifier fires "high" for nearly every cross-agent conflict, flooding the queue; the higher-confidence-wins resolution strategy becomes effectively random; and agent reliability scores flatten to uninformative constants.
+- *Mitigation:* (a) `confidence_source` field now distinguishes `'agent'` (raw self-report), `'system'` (computed from calibration), and `'calibrated'` (adjusted by historical contradiction rate). (b) Build a per-agent calibration table: `(agent_id, reported_confidence_bucket, empirical_contradiction_rate)` — updated whenever a conflict is resolved, using the loser's original confidence. (c) The conflict severity classifier should weight structural signals primarily (cross-engineer, same scope, both facts current) and treat `confidence` as a tiebreaker only when structural signals are ambiguous.
 
 ---
 
