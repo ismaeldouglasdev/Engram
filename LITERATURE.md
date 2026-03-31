@@ -261,8 +261,88 @@ Key principles from building MCP servers at production scale:
 | Context7 (Upstash) | 44k | Documentation | 2 | Server-side intelligence, behavioral descriptions |
 | MindsDB | 30k | Database AI | ~10 | Natural language to SQL |
 | GitHub MCP | 20k | Developer tools | ~15 | Workflow-level tools (not raw API) |
-| Playwright MCP (Microsoft) | 15k | Browser automation | ~8 | Full browser control |
+| Playwright MCP (Microsoft) | 15k | Browser automation | ~8 | Accessibility snapshots, not screenshots |
 | PostgreSQL MCP | 1.8k | Database | ~5 | Read/write + performance analysis |
 | Google Drive MCP | 2k | Productivity | ~6 | Document search and management |
 
 The pattern across all successful servers: focused scope, minimal tool count, rich descriptions, zero-setup deployment, and server-side processing that minimizes token consumption.
+
+---
+
+## Platform-Level MCP Implementations
+
+### Microsoft — Azure MCP Server + Enterprise Security Architecture
+
+**Sources:** [Azure SDK Blog](https://devblogs.microsoft.com/azure-sdk/introducing-the-azure-mcp-server/) (May 2025), [OWASP MCP Top 10 for Azure](https://microsoft.github.io/mcp-azure-security-guide/), [Azure DevOps Remote MCP](https://github.com/microsoft/azure-devops-mcp)
+
+Microsoft's MCP strategy operates at two levels:
+
+1. **Product-level servers:** Azure MCP Server (Cosmos DB, Storage, Monitor, App Config, Resource Groups, Azure CLI, azd). Playwright MCP (15k stars). Azure DevOps Remote MCP. All open-source.
+
+2. **Enterprise architecture guidance:** The OWASP MCP Top 10 security guide defines the deployment pattern that Engram should follow for team/enterprise use:
+   - Stdio for prototyping only. Remote HTTP for production.
+   - Remote servers behind Azure API Management gateway.
+   - Microsoft Entra ID for authentication (no static API keys).
+   - Centralized policy enforcement (rate limiting, DLP, access control).
+   - Comprehensive monitoring via Application Insights and Log Analytics.
+   - Key stat from Astrix Security: 88% of MCP servers require credentials, 53% rely on long-lived static secrets — making stdio inappropriate for enterprise.
+
+**Impact on Engram:** Engram's three-tier auth model (local/team/enterprise) mirrors Microsoft's stdio→HTTP progression. The enterprise tier should support API gateway integration and identity provider federation.
+
+### Google — Managed Remote MCP for Cloud Databases
+
+**Sources:** [Google Cloud Blog](https://cloud.google.com/blog/products/databases/managed-mcp-servers-for-google-cloud-databases) (Feb 2026), [MCP Toolbox for Databases](https://cloud.google.com/blog/products/ai-machine-learning/mcp-toolbox-for-databases-now-supports-model-context-protocol)
+
+Google's approach is the most ambitious: fully managed, zero-infrastructure MCP servers for AlloyDB, Spanner, Cloud SQL, Firestore, Bigtable, BigQuery, and Google Maps. Key design decisions:
+
+- **Zero infrastructure deployment:** Configure the MCP server endpoint in agent config. No server to deploy, no database to manage. Enterprise-grade auditing, observability, and governance included.
+- **Identity-first security:** Authentication via IAM, not shared keys. Agents can only access tables/views explicitly authorized by the user.
+- **Full audit trail:** Every query and action logged in Cloud Audit Logs. Security teams get a record of every database interaction.
+- **Developer Knowledge MCP server:** Connects IDEs to Google's documentation — the same pattern as Context7 but for Google's own docs.
+
+**Impact on Engram:** Google's managed model is the aspirational end state for Engram's team deployment. The path: local stdio → self-hosted HTTP → (future) managed cloud endpoint. Google's IAM-based auth and audit logging patterns should inform Engram's enterprise tier.
+
+### Apple — OS-Level MCP Integration
+
+**Source:** [9to5Mac](https://9to5mac.com/2025/09/22/macos-tahoe-26-1-beta-1-mcp-integration/) (Sep 2025)
+
+Apple is integrating MCP support at the OS level via the App Intents framework in macOS Tahoe 26.1, iOS 26.1, and iPadOS 26.1. This means:
+
+- Developers can expose app actions to any MCP-compatible AI agent through system-level integration.
+- ChatGPT, Claude, or any MCP-friendly model could interact directly with Mac, iPhone, and iPad apps.
+- Developers don't need to implement MCP themselves — the OS provides the bridge.
+
+**Impact on Engram:** MCP is becoming an OS-level primitive. This validates the bet on MCP as the protocol layer. When Apple ships MCP support, Engram will be accessible from any MCP-compatible agent on macOS/iOS without additional integration work.
+
+### Linux Foundation — Agentic AI Foundation (AAIF)
+
+**Sources:** [Linux Foundation announcement](https://www.linuxfoundation.org/press/linux-foundation-announces-the-formation-of-the-agentic-ai-foundation) (Dec 2025), [Anthropic blog](https://www.anthropic.com/news/donating-the-model-context-protocol-and-establishing-of-the-agentic-ai-foundation)
+
+The AAIF brings three complementary building blocks under neutral governance:
+
+| Project | Donated by | Purpose |
+|---|---|---|
+| MCP | Anthropic | Connectivity — how agents talk to tools and data |
+| goose | Block | Execution runtime — reference agent framework |
+| AGENTS.md | OpenAI | Repository guidance — project-specific context for agents |
+
+Platinum members: AWS, Anthropic, Block, Bloomberg, Cloudflare, Google, Microsoft, OpenAI. Gold: Cisco, Datadog, IBM, Oracle, Salesforce, SAP, Shopify, Snowflake.
+
+**Impact on Engram:** Engram sits at the intersection of all three AAIF projects. It is an MCP server (connectivity). It should work seamlessly with goose (execution). It should be referenced in AGENTS.md files (guidance). This three-way integration is the distribution strategy.
+
+### OpenAI — AGENTS.md Standard
+
+**Sources:** [AGENTS.md spec](https://agents.md), [Stackademic analysis](https://blog.stackademic.com/agents-md-the-readme-your-ai-coding-agent-actually-reads-e634b7e2de34) (Jun 2026)
+
+AGENTS.md is a plain Markdown file at the repository root that gives AI coding agents project-specific context: build instructions, coding conventions, testing policies, security rules. 20k+ repos adopted. Supported by OpenAI Codex, Cursor, Google Jules, Amp, Factory.
+
+**Impact on Engram:** Engram ships a reference AGENTS.md template that tells agents when to query shared memory, when to commit facts, how to interpret conflicts, and what scopes to use. This is zero-cost distribution — a template in the docs that users drop into their repos.
+
+### MCP Registry — Official Discovery
+
+**Source:** [MCP Registry](https://modelcontextprotocol.io/registry), [MCP Blog](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)
+
+The official MCP Registry is a centralized metadata repository for publicly accessible MCP servers, backed by Anthropic, GitHub, PulseMCP, and Microsoft. It standardizes how servers are distributed and discovered.
+
+**Impact on Engram:** Engram should be listed in the official MCP Registry from day one. This is the primary discovery channel for MCP servers. The registry entry should clearly position Engram as the consistency layer — the one thing no other listed server does.
+

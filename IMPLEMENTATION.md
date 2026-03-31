@@ -1,27 +1,56 @@
 # Engram Implementation Plan
 
 This plan is grounded in the papers in [`./papers/`](./papers/), the adversarial literature
-review in [`LITERATURE.md`](./LITERATURE.md), and a study of the MCP servers that have
-achieved real production adoption (Context7 at 44k stars, GitHub MCP at 20k, Playwright
-MCP at 15k, plus Block's playbook from building 60+ MCP servers internally).
+review in [`LITERATURE.md`](./LITERATURE.md), and a deep study of the protocols and MCP
+servers that have achieved real production adoption across every major platform.
 
-Four rounds of adversarial research shaped the architecture:
+Four rounds of research shaped the architecture:
 
 - **Round 1** exposed embedding retrieval failures and LLM-as-judge agreeableness bias.
 - **Round 2** replaced the LLM-only pipeline with a tiered NLI approach, cutting latency 200×.
 - **Round 3** found seven structural failure modes and collapsed four versioning mechanisms
   into one invariant: *temporal validity intervals*. BFT, graph database, and quorum commits
   removed as premature complexity.
-- **Round 4** studied the live MCP ecosystem: Anthropic's MCP donated to the Linux Foundation
-  (Agentic AI Foundation, Dec 2025), Block's 60+ internal server playbook, Context7's
-  sub-agent filtering architecture, Google's managed remote MCP design, Microsoft's
-  Windows ODR security proxy, and the OWASP/Invariant Labs MCP attack surface research.
-  Four new failure modes added; transport upgraded to Streamable HTTP; AGENTS.md
-  integration added; entity resolution improved with MinHash/Jaccard heuristics.
 
-The unifying pattern across every successful MCP server: minimal tool count, rich tool
-descriptions that guide LLM behavior, server-side intelligence, zero-setup deployment,
-and privacy by design.
+A fourth input — the live MCP ecosystem — shaped the tool surface, transport, security,
+and deployment model. This includes:
+
+- **Linux Foundation / AAIF:** MCP donated to the Agentic AI Foundation (Dec 2025).
+  Platinum members: AWS, Anthropic, Block, Bloomberg, Cloudflare, Google, Microsoft,
+  OpenAI. Gold: Cisco, Datadog, IBM, Oracle, Salesforce, SAP, Shopify, Snowflake.
+  Three founding projects: MCP (connectivity), goose (execution runtime), AGENTS.md
+  (repository-level agent guidance). 97M cumulative SDK downloads. 13k+ servers on GitHub.
+- **Microsoft:** Azure MCP Server (Cosmos DB, Storage, Monitor, App Config, Resource Groups,
+  Azure CLI, azd). Playwright MCP (15k stars, accessibility-snapshot-based browser
+  automation). OWASP MCP Top 10 security guide. Enterprise deployment architecture:
+  remote HTTP servers behind Azure API Management gateway with Entra ID auth, centralized
+  policy enforcement, and comprehensive monitoring. Key lesson: *stdio for prototyping,
+  HTTP for production*.
+- **Google:** Managed remote MCP servers for AlloyDB, Spanner, Cloud SQL, Firestore,
+  Bigtable, BigQuery, Google Maps. Zero infrastructure deployment — configure endpoint,
+  get enterprise-grade auditing/observability/governance. IAM-based auth (no shared keys).
+  Every query logged in Cloud Audit Logs. MCP Toolbox for Databases (open-source).
+  Key lesson: *identity-first security, full observability, managed infrastructure*.
+- **Apple:** MCP support coming to macOS Tahoe 26.1, iOS 26.1, iPadOS 26.1 via App Intents
+  framework integration. System-level MCP lets developers expose app actions to any
+  MCP-compatible AI agent. Key lesson: *MCP is becoming an OS-level primitive, not just
+  a developer tool*.
+- **Block:** goose agent framework (open-source, AAIF founding project). 60+ internal MCP
+  servers. Published playbook: design top-down from workflows, tool descriptions are LLM
+  prompts, token budget management, actionable error messages. Key lesson: *fewer tools,
+  richer descriptions, server-side intelligence*.
+- **OpenAI:** AGENTS.md standard (AAIF founding project). A README for AI agents — project
+  build instructions, coding conventions, testing policies, security rules in Markdown.
+  20k+ repos adopted. Supported by Codex, Cursor, Google Jules, Amp, Factory. Key lesson:
+  *agents need repository-level context alongside tool access*.
+- **Context7 (Upstash):** 44k stars, 240k weekly npm downloads. Two tools only. Server-side
+  reranking cut tokens 65%, latency 38%. Behavioral guidance embedded in tool descriptions.
+  Zero-setup deployment. Privacy by design. Key lesson: *solve one problem exceptionally
+  well with minimal surface area*.
+
+The pattern is consistent across every platform: minimal tool count, rich descriptions
+that guide LLM behavior, server-side intelligence, zero-setup local deployment, remote
+HTTP for production, identity-first security, full observability, and privacy by design.
 
 ---
 
@@ -743,32 +772,90 @@ under concurrent agent use.
 For a single-developer workflow (the majority use case), quorum makes Engram
 non-functional. Source corroboration in query scoring is sufficient.
 
-**Auth model follows the MCP 2025-06-18 spec:**
+### Auth model — three tiers, following the industry
 
-The MCP spec now classifies MCP servers as OAuth 2.0 Resource Servers. Engram implements
-this in two tiers:
+The MCP ecosystem has converged on a clear deployment pattern. Microsoft's OWASP MCP
+security guide says it plainly: *"stdio for prototyping, HTTP for production."* Google's
+managed MCP servers use IAM-based auth with no shared keys. The MCP 2025-06-18 spec
+classifies servers as OAuth 2.0 Resource Servers. Engram follows this progression:
 
-1. **Local mode (default):** No auth. The server runs on localhost, accessed via stdio
-   transport. This is the zero-setup path — identical to how Context7, GitHub MCP, and
-   every other popular local MCP server works.
+**Tier 1 — Local mode (default):** No auth. Stdio transport. The server runs on
+localhost, creates `~/.engram/knowledge.db` on first run. Zero setup. This is how
+Context7, GitHub MCP, Playwright MCP, and every popular local MCP server works.
 
-2. **Team mode (`--auth`):** Bearer token auth as the MVP. Tokens are JWTs bound to the
-   server instance (audience claim) to prevent token confusion attacks per the MCP spec's
-   security considerations. HTTPS required for non-localhost.
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "command": "uvx",
+      "args": ["engram-mcp@latest"]
+    }
+  }
+}
+```
+
+**Tier 2 — Team mode (`--auth`):** Streamable HTTP transport. Bearer token auth. Tokens
+are JWTs bound to the server instance (audience claim) to prevent token confusion attacks
+per the MCP spec. HTTPS required. This is the minimum for any non-localhost deployment.
 
 ```
-engram serve --auth
+engram serve --host 0.0.0.0 --port 7474 --auth
 engram token create --engineer [email]
 ```
 
-Future: full OAuth 2.1 with PKCE, Protected Resource Metadata (RFC 9728), and the
-`resource` parameter (RFC 8707) for token binding. This aligns with the MCP spec's
-direction and enables integration with enterprise identity providers.
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "url": "https://engram.internal:7474/mcp"
+    }
+  }
+}
+```
 
-**Input validation:** Following Aptori's and Block's MCP security guidance, all tool
-inputs are validated via Pydantic models. LLM output is treated as untrusted input.
-Parameterized queries only — no string interpolation in SQL. Entity extraction uses
-allowlisted patterns, not arbitrary LLM output.
+**Tier 3 — Enterprise mode (future):** Full OAuth 2.1 with PKCE. Protected Resource
+Metadata (RFC 9728) for authorization server discovery. Resource parameter (RFC 8707)
+for token binding. Integration with enterprise identity providers (Microsoft Entra ID,
+Google IAM, Okta). This follows the pattern Microsoft's Azure MCP Server uses: remote
+HTTP servers behind an API gateway with centralized policy enforcement and monitoring.
+
+### Security — copying what works
+
+Every major platform's MCP security guidance converges on the same principles. Engram
+implements all of them:
+
+| Principle | Source | Engram Implementation |
+|---|---|---|
+| Validate all inputs | Microsoft OWASP, Aptori, Block | Pydantic models on all tool inputs |
+| Treat LLM output as untrusted | Microsoft OWASP, Aptori | Parameterized SQL only, no string interpolation |
+| Enforce auth per tool | Microsoft OWASP, Google IAM | Scope permissions checked on every tool call |
+| Full observability | Google Cloud Audit Logs, Microsoft | Every tool call logged with agent_id, args, duration |
+| Bind tokens to server instance | MCP 2025-06-18 spec | JWT audience claim |
+| No shared keys | Google managed MCP | Per-engineer tokens, never shared |
+| HTTPS for non-localhost | MCP spec, all enterprise guides | Enforced in team/enterprise mode |
+
+### AGENTS.md integration
+
+OpenAI's AGENTS.md standard (AAIF founding project, 20k+ repos adopted) provides
+repository-level context to AI agents. Engram should be referenced in a project's
+AGENTS.md to guide agents on when and how to use shared memory:
+
+```markdown
+## Shared Memory (Engram)
+
+Before starting work on any area of the codebase, query Engram for existing
+team knowledge: `engram_query("topic")`. After discovering something worth
+preserving, commit it: `engram_commit(content, scope, confidence)`.
+
+Check `engram_conflicts()` before making architectural decisions. Conflicts
+mean two agents believe incompatible things about the same system.
+
+Scopes: auth, payments, infra, api, frontend, database
+```
+
+This is how Engram becomes part of the standard agent workflow — not through
+configuration, but through the same repository-level guidance that every major
+AI coding tool now reads.
 
 ---
 
