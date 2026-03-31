@@ -451,3 +451,235 @@ Engram's schema includes a `confidence REAL NOT NULL` field described as "agent-
 | SQLite WAL docs | Storage | Single-writer serialization | N/A | **High** — parallel agent commits will stall under load |
 | Embedding drift (arXiv:2025) | Storage | Silent index corruption on upgrade | N/A | **High** — stored blobs become stale after model swap |
 | Confidence calibration (arXiv:2025) | Epistemics | LLM self-reported confidence unreliable | N/A | **High** — `confidence` field is systematically inflated |
+
+---
+
+# Round 2: Falsification Research — Unifying Abstractions and Competitive Threats
+
+The following papers, systems, and open-source projects were identified through a second round of targeted adversarial research. The goal was to find evidence that could force a major architectural change or reveal a simplifying abstraction that the current implementation plan misses. Several findings meet that bar.
+
+---
+
+## [23] NLI Cross-Encoders as a Replacement for LLM-as-Judge Contradiction Detection
+
+**Model:** `cross-encoder/nli-deberta-v3-base` (Microsoft DeBERTa-v3, fine-tuned on SNLI + MultiNLI)
+**Source:** [Hugging Face](https://huggingface.co/cross-encoder/nli-deberta-v3-base)
+**Performance:** 92.38% accuracy on SNLI test set, 90.04% on MNLI mismatched set
+
+### Summary
+
+A cross-encoder NLI model that takes a sentence pair and outputs three scores: contradiction, entailment, neutral. Runs locally via `sentence-transformers` or raw `transformers`. Inference is ~10ms per pair on CPU, ~2ms on GPU. The model is ~400MB (DeBERTa-v3-base). No API calls, no cost per invocation, deterministic output.
+
+### Threat to Engram — **CRITICAL (Simplifying)**
+
+This is the single most important finding in this research round. Engram's Phase 3 conflict detection pipeline currently relies on an LLM (claude-haiku) as the contradiction judge — a design that is slow (~1-5s per pair), expensive (API cost per commit), non-deterministic, and subject to the agreeableness bias documented in [12] (75%+ false negative rate). The NLI cross-encoder offers a fundamentally different approach:
+
+- **Speed:** ~10ms per pair vs. ~2000ms for an LLM call. This means Engram could check a new fact against 30 candidates in ~300ms total, making conflict detection effectively synchronous rather than requiring an async pipeline.
+- **Cost:** Zero marginal cost per check (model runs locally). Eliminates the LLM API dependency for the core differentiating feature.
+- **Determinism:** Same input always produces the same output. No agreeableness bias, no prompt sensitivity, no ensemble needed for consistency.
+- **Accuracy:** 92% on general NLI benchmarks. While this is on general text (not codebase-specific facts), it provides a strong baseline that can be improved with domain-specific fine-tuning.
+
+The architectural implication is profound: the entire Phase 3 pipeline could be restructured as a **tiered detection system** where the NLI cross-encoder serves as a fast, cheap first pass, and the LLM judge is reserved only for cases where the NLI model returns ambiguous scores (e.g., contradiction score between 0.3 and 0.7). This eliminates the LLM-as-judge as a single point of failure and reduces the async complexity that drives several of the identified failure modes (race conditions, SQLite write contention during LLM calls, etc.).
+
+**Limitations:** NLI models trained on SNLI/MNLI may not generalize perfectly to technical codebase facts. "The auth service uses JWT" vs. "The auth service does not use JWT" should be caught (simple negation), but "The rate limit is 100 req/s" vs. "The rate limit is 1000 req/s" may still require the numeric pre-check. Domain-specific fine-tuning on a small dataset of codebase contradiction pairs would likely close this gap.
+
+---
+
+## [24] SummaC: Sentence-Level NLI Aggregation for Document Consistency
+
+**Authors:** Philippe Laban et al.
+**Venue:** TACL 2022
+**ArXiv:** [2111.09525](https://arxiv.org/abs/2111.09525)
+**GitHub:** Referenced in Hugging Face ecosystem
+
+### Summary
+
+SummaC demonstrates that NLI models, which are trained on sentence pairs, can be effectively applied to document-level consistency checking through a segmentation-and-aggregation strategy called SummaCConv. The approach segments documents into sentences, computes pairwise NLI scores between all sentence pairs, bins the scores into histograms, and applies a learned convolutional aggregator to produce a document-level consistency score. Achieves 74.4% balanced accuracy on a benchmark of six inconsistency detection datasets.
+
+### Threat to Engram — **High (Simplifying)**
+
+SummaC's architecture maps directly onto Engram's problem. Engram facts are short text statements (typically 1-3 sentences). The SummaCConv pattern — pairwise NLI scoring between a new fact and all candidates, followed by aggregation — is exactly what Engram's conflict detection pipeline needs. Combined with finding [23], this suggests a concrete architecture:
+
+1. New fact arrives → segment into atomic claims
+2. Retrieve candidates (embedding + BM25 + entity, as currently planned)
+3. Run NLI cross-encoder on all (new_claim, candidate_claim) pairs (~300ms total)
+4. Aggregate scores: if max contradiction score > threshold, flag as conflict
+5. Only escalate to LLM judge for ambiguous cases or when explanation text is needed
+
+This eliminates the LLM from the hot path entirely.
+
+---
+
+## [25] CLAIRE: Corpus-Level Inconsistency Detection at Scale
+
+**Authors:** Sina Semnani et al.
+**Venue:** EMNLP 2025
+**ArXiv:** [2509.23233](https://arxiv.org/abs/2509.23233)
+
+### Summary
+
+CLAIRE is an agentic system for corpus-level inconsistency detection in Wikipedia. It combines LLM reasoning with retrieval to surface potentially inconsistent claims with contextual evidence. In a user study with experienced Wikipedia editors, 87.5% reported higher confidence when using CLAIRE, and participants identified 64.7% more inconsistencies. Key finding: at least 3.3% of English Wikipedia facts contradict another fact. The best fully automated system achieves only 75.1% AUROC on the WIKICOLLIDE benchmark.
+
+### Threat to Engram — **High (Calibrating)**
+
+CLAIRE provides the first empirical baseline for what Engram should expect: even in a well-curated corpus like Wikipedia, ~3.3% of facts are inconsistent. In a less-curated multi-agent knowledge base, the rate will be higher. More importantly, the 75.1% AUROC ceiling for fully automated detection means Engram should not promise perfect conflict detection — it should be designed as a human-in-the-loop system from the start, with the dashboard (Phase 7) being more critical than previously assumed. CLAIRE's architecture (retrieval + LLM reasoning + human review) validates Engram's general approach but suggests the detection pipeline should be optimized for recall over precision, surfacing more candidates for human review rather than trying to be a perfect automated judge.
+
+---
+
+## [26] CodeCRDT: CRDT-Based Coordination for Multi-Agent LLM Systems
+
+**Authors:** Sergey Pugachev et al.
+**ArXiv:** [2510.18893](https://arxiv.org/abs/2510.18893) (Oct 2025)
+
+### Summary
+
+CodeCRDT applies Conflict-Free Replicated Data Types (CRDTs) to multi-agent LLM code generation. Instead of explicit message passing, agents coordinate by monitoring a shared state with observable updates and deterministic convergence. Evaluation across 600 trials shows 100% convergence with zero merge failures, though with mixed performance results (up to 21.1% speedup on some tasks, up to 39.4% slowdown on others). Semantic conflict rates of 5-10% were observed.
+
+### Threat to Engram — **Medium (Architectural Alternative)**
+
+CodeCRDT demonstrates that CRDTs can provide strong eventual consistency for multi-agent LLM systems without centralized coordination. This challenges Engram's centralized SQLite-based architecture for Phase 6 (federation). If Engram's fact store were modeled as a CRDT (specifically, a grow-only set with metadata), federation would get strong eventual consistency for free — no custom sync protocol needed. The 5-10% semantic conflict rate observed in CodeCRDT aligns with CLAIRE's 3.3% finding and provides a useful baseline for Engram's expected conflict volume.
+
+However, CRDTs resolve conflicts automatically through deterministic merge rules, which is the opposite of Engram's philosophy (conflicts are structured artifacts for human review). The CRDT approach would need to be adapted: use CRDTs for the replication/sync layer, but surface semantic conflicts as a separate concern on top.
+
+---
+
+## [27] Semantic Conflict Model for Collaborative Data Structures
+
+**Authors:** Georgii Semenov et al.
+**ArXiv:** [2602.19231](https://arxiv.org/abs/2602.19231) (Feb 2026)
+
+### Summary
+
+Introduces a conflict model for collaborative data structures that enables explicit, local-first conflict resolution without central coordination. The model identifies conflicts using semantic dependencies between operations and resolves them by rebasing conflicting operations onto a reconciling operation via a three-way merge over a replicated journal. Demonstrates the approach on collaborative registers including an explicit Last-Writer-Wins Register and a multi-register entity supporting semi-automatic reconciliation.
+
+### Threat to Engram — **High (Unifying Abstraction)**
+
+This paper describes almost exactly what Engram needs for its federation layer (Phase 6) and conflict resolution workflow (Phase 4). The "replicated journal" maps to Engram's append-only facts table. The "semantic dependencies between operations" maps to Engram's conflict detection. The "three-way merge via reconciling operation" maps to Engram's `engram_resolve` with explicit merge. The key insight is that Engram's fact store is essentially a replicated journal already — it just doesn't formalize the replication semantics. Adopting this model would give Engram a principled foundation for federation rather than the ad-hoc pull-based sync currently planned.
+
+---
+
+## [28] Letta (formerly MemGPT): Shared Memory Blocks for Multi-Agent Systems
+
+**Source:** [Letta Documentation](https://docs.letta.com/guides/core-concepts/memory/shared-memory/), [GitHub](https://github.com/letta-ai/letta)
+**Status:** Production, actively maintained, VC-funded (Felicis seed)
+
+### Summary
+
+Letta (evolved from the UC Berkeley MemGPT research project) provides stateful agents with tiered memory systems. Its shared memory feature allows multiple agents to access and update the same memory blocks. When one agent updates a block, all others see the change immediately. Concurrency model: `memory_insert` is append-only and concurrent-safe; `memory_replace` is mostly safe (fails if target string changed); `memory_rethink` (full rewrite) uses last-writer-wins. No conflict detection, no contradiction surfacing, no structured consistency model.
+
+### Threat to Engram — **Critical (Competitive)**
+
+Letta is the closest existing system to Engram's vision. It already has:
+- Shared memory blocks attached to multiple agents
+- Append-only insert operations
+- Read-only blocks for reference data
+- Agent identity and access control
+- A production-grade platform with SDK, dashboard, and cloud deployment
+
+What Letta does NOT have:
+- Semantic conflict detection between shared memory entries
+- Structured contradiction artifacts
+- Cross-agent consistency checking
+- Provenance tracking and derivation chains
+
+This validates Engram's core thesis (the gap exists) but dramatically narrows the competitive window. If Letta adds conflict detection to their shared memory blocks, Engram's differentiation evaporates. Engram's strategy should be: (a) ship conflict detection fast, (b) consider whether Engram should be a layer on top of Letta rather than a standalone system, (c) focus on the consistency model as the moat, not the memory storage.
+
+---
+
+## [29] Agent-MCP: Shared Knowledge Graph MCP Server
+
+**Source:** [GitHub](https://github.com/rinadelph/Agent-MCP)
+**Status:** Open source, active development
+
+### Summary
+
+Agent-MCP is an MCP server framework for multi-agent AI development that provides a persistent shared knowledge graph, intelligent task management, and real-time visualization via a web dashboard. Multiple specialized agents work simultaneously on different parts of a codebase, coordinated through shared memory. The knowledge graph is searchable and persistent across sessions.
+
+### Threat to Engram — **Medium (Competitive)**
+
+Agent-MCP occupies the same "shared MCP memory for coding agents" niche as Engram. It has a working knowledge graph, task management, and a dashboard — features Engram plans for Phases 5-7. However, Agent-MCP has no conflict detection, no consistency model, and no contradiction surfacing. It's a coordination tool, not a consistency tool. The threat is that Agent-MCP's broader feature set (task management, agent lifecycle, visualization) may be more immediately useful to teams than Engram's focused consistency model, making it harder for Engram to gain adoption even if its core feature is more novel.
+
+---
+
+## [30] MAGIC: Multi-Hop Contradictions Are Dramatically Harder
+
+**Authors:** (Multi-institution team)
+**Venue:** EMNLP 2025 Findings
+**ArXiv:** [2507.21544](https://arxiv.org/abs/2507.21544)
+
+### Summary
+
+MAGIC is a benchmark for inter-context conflicts in RAG systems that specifically tests multi-hop reasoning. Key finding: both open-source and proprietary LLMs struggle with conflict detection when multi-hop reasoning is required, and often fail to pinpoint the exact source of contradictions. This extends He et al.'s [5] theoretical result (pairwise checks are insufficient) with empirical evidence that the problem is not just theoretical — real LLMs fail at it in practice.
+
+### Threat to Engram — **High (Confirms Known Limitation)**
+
+Reinforces that Engram's pairwise detection will miss multi-hop contradictions. Example: Fact A says "Service X uses the same database as Service Y." Fact B says "Service Y uses PostgreSQL." Fact C says "Service X uses MySQL." Facts A+B and A+C are each pairwise consistent, but the triple is jointly inconsistent. MAGIC shows this isn't just a theoretical concern — it's a practical failure mode that current LLMs cannot reliably detect even when given all three facts together. The entity-based retrieval (Phase 3, Path C) partially mitigates this by ensuring facts about the same entities are compared, but the LLM judge still needs to reason over the transitive chain.
+
+---
+
+## [31] Debate Collapse in Multi-Agent Systems
+
+**Authors:** Luoxi Tang et al.
+**ArXiv:** [2602.07186](https://arxiv.org/abs/2602.07186) (Feb 2026)
+
+### Summary
+
+Multi-agent debate systems are vulnerable to "debate collapse" — a failure mode where agents converge on erroneous reasoning through iterative deliberation. The authors propose uncertainty metrics at three levels (intra-agent, inter-agent, system-level) and show that uncertainty-driven policy optimization can mitigate the problem. Key insight: confident-sounding but incorrect responses mislead other agents, creating cascading failures.
+
+### Threat to Engram — **Medium (Amplification Risk)**
+
+Debate collapse is the multi-agent version of the Mandela Effect [8]. When agents query Engram, incorporate retrieved facts into their reasoning, and then commit derived facts back, they create a feedback loop. If the initial fact is wrong but confidently stated, subsequent agents will build on it, and the knowledge base will accumulate a cluster of mutually-reinforcing incorrect facts. Engram's conflict detection cannot catch this because the facts agree with each other — they're just all wrong. The uncertainty metrics proposed in this paper (particularly the inter-agent disagreement signal) could inform a "confidence calibration" feature: if all facts in a cluster trace back to a single source agent, flag the cluster as "single-source, uncorroborated."
+
+---
+
+## [32] SCALE: Fast NLI-Based Inconsistency Detection Over Long Documents
+
+**Authors:** (Research team)
+**Venue:** EMNLP 2023
+**ArXiv:** [2310.13189](https://arxiv.org/abs/2310.13189)
+
+### Summary
+
+SCALE is an NLI-based model that uses large text chunks to condition over long texts for factual inconsistency detection. Achieves state-of-the-art performance across diverse tasks and long inputs. The key architectural insight is chunking: rather than comparing individual sentences, SCALE compares chunks of text, preserving context that sentence-level approaches lose.
+
+### Threat to Engram — **Medium (Architectural Refinement)**
+
+SCALE's chunking approach is relevant because Engram facts are not always atomic sentences — they can be multi-sentence descriptions of architectural decisions, API behaviors, or configuration details. A sentence-level NLI approach (as in SummaC [24]) might miss contradictions that span multiple sentences within a fact. SCALE suggests that Engram's NLI-based detection should operate on full fact content rather than decomposing facts into sentences, at least for the initial pass.
+
+---
+
+## Revised Competitive Landscape
+
+| System | Shared Memory | Conflict Detection | MCP Compatible | Consistency Model | Status |
+|---|---|---|---|---|---|
+| **Letta** | Yes (blocks) | No | Via adapters | Last-writer-wins | Production |
+| **Agent-MCP** | Yes (knowledge graph) | No | Yes (native) | None | Active OSS |
+| **mem0** | No (single-user) | No | Via MCP wrapper | None | Production (40k+ stars) |
+| **shared-memory-mcp** | Yes | No | Yes | None | Early OSS |
+| **Memorix** | Yes (cross-IDE) | No | Partial | None | Active OSS |
+| **SAMEP** | Yes (encrypted) | No | Yes | Secure sharing | Research |
+| **Engram** | Yes (planned) | **Yes** | Yes (native) | **Append-only + semantic conflicts** | **Early development** |
+
+The consistency model remains Engram's unique differentiator across all known systems. But the window is narrowing — Letta in particular has the infrastructure, funding, and user base to add conflict detection quickly if they choose to.
+
+---
+
+## Key Unifying Insight: The Tiered NLI Pipeline
+
+The most important finding across this entire research round is that Engram's conflict detection pipeline should be restructured around a **tiered NLI architecture** rather than an LLM-as-judge architecture:
+
+| Tier | Method | Speed | Cost | Accuracy | When Used |
+|---|---|---|---|---|---|
+| 0 | Content hash + entity overlap | <1ms | Free | 100% (exact match) | Every commit |
+| 1 | NLI cross-encoder (DeBERTa-v3) | ~10ms/pair | Free (local) | ~92% | Every commit |
+| 2 | Numeric/temporal pre-checks | <5ms | Free | High for specific types | Every commit |
+| 3 | LLM judge (adversarial prompt) | ~2000ms/pair | API cost | Variable (bias-prone) | Ambiguous Tier 1 scores only |
+
+This tiered approach:
+- Makes conflict detection effectively synchronous (Tiers 0-2 complete in <500ms for 30 candidates)
+- Eliminates the LLM API as a dependency for the core feature
+- Reduces the async complexity that drives failure modes 2, 9, and 20
+- Provides deterministic, reproducible results for the majority of checks
+- Reserves the expensive, non-deterministic LLM call for edge cases where explanation text is needed
+
+This is the major architectural change this research round was looking for.

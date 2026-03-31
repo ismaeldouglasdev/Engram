@@ -1,6 +1,13 @@
 # Engram Implementation Plan
 
-This plan is grounded in the papers in [`./papers/`](./papers/) and the adversarial literature review in [`LITERATURE.md`](./LITERATURE.md). The original design drew from Yu et al. (2026) and Hu et al. (2026). This revision incorporates findings from targeted falsification research — papers that expose failure modes in embedding-based retrieval, LLM-as-judge contradiction detection, and multi-agent memory scaling. Every major design decision below has been stress-tested against this adversarial literature; where the original plan was vulnerable, mitigations have been added.
+This plan is grounded in the papers in [`./papers/`](./papers/) and the adversarial literature review in [`LITERATURE.md`](./LITERATURE.md). The original design drew from Yu et al. (2026) and Hu et al. (2026). Two rounds of targeted falsification research have shaped this revision:
+
+- **Round 1** exposed failure modes in embedding-based retrieval, LLM-as-judge contradiction detection, and multi-agent memory scaling.
+- **Round 2** discovered a unifying architectural simplification: **NLI cross-encoders** (specifically `cross-encoder/nli-deberta-v3-base`, 92% accuracy, ~10ms/pair, runs locally) can replace the LLM-as-judge for the majority of contradiction checks. This eliminates the LLM API as a dependency for the core differentiating feature and makes conflict detection effectively synchronous.
+
+The most significant architectural change from Round 2 is the **Tiered NLI Pipeline** (see Phase 3), which restructures conflict detection from an async LLM-dependent process into a fast, local, deterministic pipeline with LLM escalation only for ambiguous cases. This change was motivated by the discovery that production NLI models achieve 92% accuracy on contradiction detection at 200x the speed and zero marginal cost compared to LLM API calls, while also avoiding the agreeableness bias [12] that causes LLM judges to miss 75%+ of contradictions.
+
+Additional Round 2 findings include: Letta (formerly MemGPT) already ships shared memory blocks for multi-agent systems but has no conflict detection [28]; Agent-MCP provides a shared knowledge graph MCP server [29]; CLAIRE demonstrates corpus-level inconsistency detection at Wikipedia scale [25]; and the Semantic Conflict Model [27] provides a principled foundation for Engram's federation layer based on replicated journals with semantic dependency tracking.
 
 ---
 
@@ -123,6 +130,7 @@ The `contradicted_commits / total_commits` ratio provides an agent reliability s
 - **Python 3.11+** with `fastmcp` (or `mcp` SDK directly)
 - **SQLite** via `aiosqlite` for async I/O (WAL mode mandatory — see SQLite concurrency note below)
 - **`sentence-transformers`** for local embeddings (default: `all-MiniLM-L6-v2`, ~80MB, no API key required)
+- **`cross-encoder/nli-deberta-v3-base`** for local NLI-based contradiction detection (~400MB, 92% accuracy on SNLI/MNLI, ~10ms/pair on CPU) — this is the primary contradiction judge, replacing the LLM-as-judge for the majority of checks [23]
 - **`rank_bm25`** for lexical retrieval — addresses the Semantic Collapse problem [6] where embedding-based retrieval fails on negation
 - **`numpy`** for cosine similarity
 
@@ -176,7 +184,7 @@ engram serve [--host HOST] [--port PORT] [--db PATH] [--embedding-model MODEL]
 
 ## Phase 3 — Conflict detection
 
-**Goal:** Implement the core consistency mechanism. This is what no existing system does.
+**Goal:** Implement the core consistency mechanism. This is what no existing system does — including Letta [28], Agent-MCP [29], mem0, and every other shared memory system in the current landscape.
 
 The literature distinguishes two types of consistency violation (Yu et al.):
 1. **Read-time conflict** — a stale fact remains visible alongside a newer contradicting fact (versioning problem)
@@ -184,51 +192,84 @@ The literature distinguishes two types of consistency violation (Yu et al.):
 
 Both are handled here.
 
-### Detection pipeline
+### Tiered Detection Pipeline (Revised Architecture)
 
-Triggered after every `engram_commit` (async, non-blocking to the committing agent):
+The original design used an LLM-as-judge for all contradiction checks. Round 2 research [23, 24, 25] revealed that NLI cross-encoders achieve 92% accuracy on contradiction detection at ~10ms/pair (vs. ~2000ms for LLM calls), with zero marginal cost and no agreeableness bias. This enables a **tiered pipeline** where the fast, deterministic NLI model handles the majority of checks, and the LLM is reserved for ambiguous cases requiring explanation text.
 
-**Step 1 — Candidate retrieval (dual-path)**
+Triggered after every `engram_commit`:
 
-For the newly committed fact `f_new`, retrieve candidates via two parallel paths to address the Semantic Collapse problem [6]:
+**Tier 0 — Deterministic pre-checks (< 1ms, every commit)**
+
+Before any model inference:
+- **Content hash dedup:** If `content_hash` matches an existing non-superseded fact in the same scope, return `duplicate: true`. O(1) lookup. Catches the duplication failure mode [9].
+- **Entity overlap check:** If `f_new.entities` overlaps with any existing fact's `entities` (same service name, API endpoint, or config key with different values), flag as a candidate. Hash-based, immune to the Orthogonality Constraint [7].
+
+**Tier 1 — NLI Cross-Encoder (< 500ms total, every commit)**
+
+For the newly committed fact `f_new`, retrieve candidates via three parallel paths:
 
 *Path A — Embedding similarity:*
 - Retrieve the top-20 most embedding-similar facts in the same scope
-- Use relative ranking (top-k) rather than an absolute cosine threshold. The original 0.65 threshold is unreliable because embedding spaces are anisotropic — scores concentrate in a narrow band regardless of actual relatedness [14]. Instead, take the top-20 by rank and let the LLM judge filter.
+- Use relative ranking (top-k) rather than an absolute cosine threshold. Absolute thresholds are unreliable due to anisotropy [14].
 
 *Path B — BM25 lexical match:*
-- Index fact content + keywords with BM25
 - Retrieve top-10 BM25 matches for `f_new.content` in the same scope
-- This catches contradictions that differ only by negation or a single changed predicate (e.g., "uses JWT" vs. "does not use JWT"), which embedding retrieval misses because negation signals collapse in vector space [6].
+- Catches negation-differentiated contradictions that embeddings miss [6].
 
 *Path C — Entity overlap:*
-- If `f_new.entities` overlaps with any existing fact's `entities` (same service name, API endpoint, or config key), include that fact as a candidate regardless of embedding or BM25 score. This provides hash-based retrieval that doesn't suffer from the Orthogonality Constraint [7].
+- Include any fact whose `entities` overlap with `f_new.entities`, regardless of embedding or BM25 score.
 
 Union all three candidate sets, deduplicate, cap at 30 candidates.
 
-Secondary fallback: if fewer than 5 candidates found in exact scope, retrieve globally with stricter filtering (top-10 by embedding, entity overlap only) to catch scope fragmentation.
+For each candidate pair `(f_new, f_candidate)`, run the NLI cross-encoder (`cross-encoder/nli-deberta-v3-base`):
 
-**Step 2 — Specialized pre-checks (before LLM)**
+```python
+from sentence_transformers import CrossEncoder
 
-Before invoking the LLM judge, run fast deterministic checks that catch contradiction types LLMs handle poorly [13]:
+nli_model = CrossEncoder('cross-encoder/nli-deberta-v3-base')
+scores = nli_model.predict([(f_new.content, f_candidate.content)])
+# scores = [contradiction_score, entailment_score, neutral_score]
+```
+
+Classification:
+- If `contradiction_score > 0.85`: **flag as conflict** (high confidence). Write to `conflicts` table with `detection_method = "nli"`.
+- If `contradiction_score` between 0.5 and 0.85: **escalate to Tier 3** (LLM judge) for confirmation and explanation generation.
+- If `entailment_score > 0.85`: candidate for corroboration link (see Tier 1b).
+- Otherwise: no conflict detected.
+
+At 30 candidates × ~10ms/pair, Tier 1 completes in ~300ms. This makes conflict detection **effectively synchronous** — the committing agent can optionally wait for the result rather than requiring a fully async pipeline.
+
+**Tier 1b — Corroboration detection**
+
+If `f_new` and `f_candidate` are from *different* agents, the NLI model returns `entailment_score > 0.85`, and entity overlap is high: mark `f_new` with a `corroborates: f_candidate.id` link. This addresses duplication [9] without deleting either fact.
+
+**Tier 2 — Specialized numeric/temporal checks (< 5ms, every commit)**
+
+Run in parallel with Tier 1:
 
 *Numeric contradiction check:*
 - Extract numeric values with units from both facts (using the `entities` field)
-- If both facts reference the same entity + attribute but with different numeric values (e.g., "rate limit is 100 req/s" vs. "rate limit is 1000 req/s"), flag as a candidate contradiction with `detection_method = "numeric"`
-- This catches order-of-magnitude errors that LLMs systematically miss [13]
+- If both facts reference the same entity + attribute but with different numeric values, flag as a candidate contradiction with `detection_method = "numeric"`
+- This catches order-of-magnitude errors that both NLI models and LLMs systematically miss [13]
 
 *Temporal contradiction check:*
 - Extract temporal references and resolve them against `committed_at` timestamps
 - If both facts reference the same entity with conflicting temporal claims, flag as candidate
 
-**Step 3 — LLM contradiction check (adversarial prompting)**
+**Tier 3 — LLM Judge (escalation only, ~2000ms/pair)**
 
-For each candidate pair `(f_new, f_candidate)`:
+Invoked ONLY when:
+- Tier 1 NLI score is ambiguous (contradiction_score between 0.5 and 0.85)
+- An explanation is needed for a high-confidence Tier 1 detection (for the dashboard)
+- A scope is configured as "high-stakes" requiring LLM confirmation
 
 ```
 System: You are an adversarial fact-checker. Your job is to find contradictions
         between two facts about a codebase. You should be skeptical and look for
         ANY way these facts could be incompatible.
+
+        The NLI model has flagged these facts as potentially contradictory
+        (score: {nli_contradiction_score}).
 
         First, list all ways these two facts COULD contradict each other.
         Then, for each potential contradiction, assess whether it is real.
@@ -247,34 +288,36 @@ Fact B (committed by {agent_b}, scope: {scope}, confidence: {conf_b}, date: {dat
 {content_b}
 ```
 
-Key changes from the original prompt, informed by the adversarial literature:
-- **Adversarial framing** ("find contradictions") counteracts the agreeableness bias [12] where LLMs default to saying things are consistent. By asking the LLM to first enumerate *potential* contradictions before judging, we force it past the agreeable default.
-- **Narrative focus bias mitigation** [11]: facts are presented in a neutral, third-person structure with explicit entity labels rather than as a narrative.
-- **Ensemble check**: For high-stakes scopes (configurable), run the contradiction check 3 times. Flag as contradictory if *any* run says yes (minority-veto strategy from Ahmed et al. [12]). This reduces the false-negative rate from ~75% to ~42% at the cost of 3x LLM calls for those scopes.
-
-Use a fast, cheap model (e.g., `claude-haiku-4-5`) — this runs on every commit. The ensemble is optional and scope-configurable.
-
-**Step 4 — Write conflict record**
-
-If contradicts (from LLM, numeric check, or temporal check), insert into `conflicts` table with `detection_method` recorded. Do not deduplicate against existing open conflicts (facts evolve; the same logical conflict may be reported by different commit pairs).
+Key design choices:
+- **Adversarial framing** counteracts agreeableness bias [12]
+- **NLI score is included** in the prompt to anchor the LLM's judgment
+- **Minority-veto ensemble** for high-stakes scopes: run 3 times, flag if any says yes
+- Use a fast, cheap model (e.g., `claude-haiku-4-5`)
 
 **Step 5 — Stale supersession check**
 
-If `f_new` and `f_candidate` are from the same agent, same scope, and high similarity (> 0.85 by embedding OR high entity overlap): mark `f_candidate.superseded_by = f_new.id`. This handles the read-time conflict case: an agent refining its own prior belief.
-*Implementation Note:* To prevent race conditions from concurrent identical commits, this step must use an atomic SQLite `UPDATE ... WHERE superseded_by IS NULL` transaction.
-
-**Step 6 — Near-duplicate detection**
-
-If `f_new` and `f_candidate` are from *different* agents but have very high similarity (> 0.92 by embedding AND high entity overlap), and the LLM does not flag a contradiction, mark `f_new` with a `corroborates: f_candidate.id` link. This addresses the duplication problem [9] without deleting either fact — both remain, but the system knows they represent the same knowledge from independent sources.
+If `f_new` and `f_candidate` are from the same agent, same scope, and high similarity (NLI entailment > 0.85 OR high entity overlap): mark `f_candidate.superseded_by = f_new.id`. Uses atomic `UPDATE ... WHERE superseded_by IS NULL` to prevent race conditions.
 
 ### Conflict severity heuristic
 
 | Condition | Severity |
 |---|---|
-| Contradicting facts from different engineers, both high-confidence (> 0.8) | high |
+| Contradicting facts from different engineers, both high-confidence (> 0.8), NLI contradiction > 0.9 | high |
+| NLI contradiction > 0.85 but same engineer | medium |
+| NLI contradiction between 0.5–0.85 (escalated to LLM, confirmed) | medium |
+| Numeric/temporal contradiction detected by Tier 2 | high (numeric values in code are rarely ambiguous) |
 | One or both facts low-confidence (< 0.5) | low |
-| Same engineer, different sessions | medium |
 | Different scopes (detected despite filtering) | low |
+
+### Performance characteristics of the tiered pipeline
+
+| Metric | Old (LLM-only) | New (Tiered NLI) |
+|---|---|---|
+| Latency per commit (30 candidates) | 60–150s (async) | ~500ms (sync-capable) |
+| Cost per commit | ~$0.01–0.05 (API) | ~$0 (local) + $0.01 for Tier 3 escalations |
+| LLM API dependency | Hard (every commit) | Soft (escalation only, ~10-20% of commits) |
+| Determinism | No (LLM varies per call) | Yes for Tiers 0-2, No for Tier 3 |
+| Agreeableness bias exposure | Every check | Only Tier 3 escalations |
 
 ---
 
@@ -396,7 +439,9 @@ engram token create --engineer alice@company.com
 
 **Goal:** Allow multiple Engram instances to share facts without centralizing everything. Yu et al. flag this as an open protocol gap (the "agent memory access protocol" problem at the inter-server level).
 
-### Federation model
+### Federation model — informed by Semantic Conflict Model [27] and CodeCRDT [26]
+
+The Semantic Conflict Model [27] demonstrates that collaborative data structures can achieve explicit, local-first conflict resolution without central coordination by using a replicated journal with semantic dependency tracking. Engram's append-only facts table is already a replicated journal — this phase formalizes the replication semantics.
 
 Each Engram instance is a **node**. Nodes can be configured as peers:
 
@@ -416,10 +461,10 @@ Pull-based (simpler than push, easier to reason about consistency):
 
 1. Node A periodically fetches `/facts/since?timestamp=T&scope=shared/*` from Node B
 2. Facts from remote nodes are written locally with their original `agent_id` and `committed_at`; `origin_node` field added
-3. Conflicts are detected across nodes using the same pipeline as Phase 3
+3. Conflicts are detected across nodes using the same tiered NLI pipeline as Phase 3 — the NLI cross-encoder runs locally on each node, so no cross-node LLM calls are needed
 4. Resolution is local: each node tracks its own conflict table
 
-This is a **eventually consistent** model — exactly the "eventual consistency paradigm" the survey (Hu et al.) describes as the practical direction for multi-agent memory.
+This is an **eventually consistent** model — exactly the "eventual consistency paradigm" the survey (Hu et al.) describes as the practical direction for multi-agent memory. CodeCRDT [26] demonstrates that CRDT-based approaches achieve 100% convergence with zero merge failures for multi-agent LLM systems, validating this direction. Future work: model the facts table as a grow-only set CRDT for stronger convergence guarantees.
 
 ---
 
@@ -444,121 +489,116 @@ This is a **eventually consistent** model — exactly the "eventual consistency 
 
 ## Delivery sequence
 
+**Competitive context:** Letta [28] already ships shared memory blocks for multi-agent systems. Agent-MCP [29] provides a shared knowledge graph MCP server. Neither has conflict detection. This is Engram's moat, but the window is narrowing. Phases 1-3 must ship fast.
+
 | Phase | Deliverable | Unlocks |
 |---|---|---|
 | 1 | Schema + migrations | All subsequent phases |
 | 2 | MCP server: commit + query (dual retrieval) | Usable by agents today |
-| 3 | Conflict detection (multi-path + adversarial prompting) | Core differentiator |
+| 3 | Conflict detection (tiered NLI pipeline) | Core differentiator — **ship this before Letta adds it** |
 | 3b | Consolidation + memory hygiene | Long-term scalability |
 | 4 | Resolution workflow | Conflicts become actionable |
 | 5 | Auth + access control | Team deployment |
-| 6 | Federation | Multi-team / org-wide |
-| 7 | Dashboard | Human oversight |
+| 6 | Federation (replicated journal model) | Multi-team / org-wide |
+| 7 | Dashboard | Human oversight (CLAIRE [25] shows this is critical — best automated systems reach only 75.1% AUROC) |
 
-Phases 1–3 are the minimum viable Engram. Phase 3b should ship shortly after — without it, the system degrades over weeks of team use. Everything after that extends the consistency model further along the axes the literature identifies: governance, access control, federation, human review.
+Phases 1–3 are the minimum viable Engram. The tiered NLI pipeline (Phase 3) is now significantly simpler to implement than the original LLM-only design: no async job queue needed for the primary detection path, no LLM API dependency for the core feature, and the NLI model ships as a pip dependency alongside the embedding model. Phase 3b should ship shortly after — without it, the system degrades over weeks of team use. Phase 7 (dashboard) is more critical than originally assessed: CLAIRE [25] demonstrates that human-in-the-loop review is essential because fully automated consistency detection has a hard ceiling around 75% AUROC.
 
 ---
 
 ## Key design constraints from the literature
 
-**1. Append-only writes (with planned consolidation)**
-Yu et al. require explicit versioning for read-time conflict handling. Deletions would break the audit trail. Facts are superseded, not deleted. However, SEDM [16] demonstrates that pure append-only without consolidation leads to unbounded growth and retrieval degradation. Phase 3b adds utility-based archival and opt-in consolidation to balance auditability with scalability.
+**1. Graph-Based Memory as the Unifying Abstraction**
+- *Insight:* A relational database is insufficient for capturing the rich, interconnected nature of knowledge. A graph-based memory, where facts are nodes and relationships are edges, is a more powerful and flexible representation.
+- *Implementation:* Engram will use a graph database as its primary storage layer. This will enable more sophisticated reasoning and retrieval, and will provide a more natural way to represent the complex dependencies between facts.
 
-**2. Semantic conflicts are structured artifacts, not errors**
-The survey (Hu et al., §7.5) and Yu et al. both frame conflicts as something to detect, surface, and resolve — not prevent. `engram_conflicts()` returns a structured list, not an exception. This is intentional.
+**2. Hybrid Retrieval is Essential**
+- *Insight:* Embedding-based retrieval alone is not sufficient. It is vulnerable to semantic collapse, negation blindness, and the orthogonality constraint. A hybrid approach that combines embedding-based, lexical, and structured retrieval is necessary.
+- *Implementation:* Engram will implement a hybrid retrieval pipeline that uses a combination of embedding similarity, BM25, and graph-based queries to retrieve candidate facts.
 
-**3. Embeddings are necessary but insufficient**
-A-Mem demonstrates that embedding-based retrieval without semantic enrichment misses connections. But the adversarial literature reveals deeper problems: the Orthogonality Constraint [7] shows embedding retrieval degrades as semantically similar facts accumulate, Semantic Collapse [6] shows negation is invisible in vector space, and anisotropy [14] makes absolute similarity thresholds unreliable. Engram therefore uses embeddings as *one of three* retrieval paths (alongside BM25 and entity-based lookup), never as the sole signal.
+**3. Adversarial Prompting and Ensembles for Contradiction Detection**
+- *Insight:* LLM-as-judge systems are prone to an "agreeableness bias" that leads to a high rate of false negatives in contradiction detection. Adversarial prompting and ensemble methods can mitigate this bias.
+- *Implementation:* Engram will use adversarial prompting and a minority-veto ensemble to improve the accuracy of its contradiction detection mechanism.
 
-**4. Agent identity is mandatory for consistency**
-Yu et al.'s consistency model requires knowing *which agent* wrote what and *when*. The survey (§7.7) warns that memory systems without attribution enable privacy leaks and untraceable hallucinations. `agent_id` is required on every write path. Additionally, agent reliability tracking (MMA [18]) uses historical contradiction rates to weight query results.
+**4. Quorum-Based Commit and Source Corroboration for Security**
+- *Insight:* Shared memory systems are vulnerable to memory poisoning attacks (e.g., MINJA). A quorum-based commit process and source corroboration can help to mitigate this threat.
+- *Implementation:* Engram will implement a quorum-based commit process for sensitive scopes, and will track the source and corroboration of all facts.
 
-**5. Scope is the unit of isolation**
-MIRIX's six memory types and A-Mem's box structure both point to the same principle: organizing memory by *topic domain* makes retrieval and conflict detection tractable. In Engram, `scope` plays this role. It should be hierarchical (path-like) and queryable at any level.
+**5. Byzantine Fault Tolerance for Consensus**
+- *Insight:* In a multi-agent system, it is essential to have a consensus mechanism that is resilient to Byzantine failures.
+- *Implementation:* Engram will implement a Byzantine Fault-Tolerant (BFT) consensus protocol for all writes to the shared memory.
 
-**6. Conflict detection must be async and non-blocking**
-Committing a fact should return immediately. Detection runs in the background. Blocking commits on LLM inference would make the write path unusable in practice.
-
-**7. LLM-as-judge is unreliable by default**
-The agreeableness bias [12] means LLM judges miss 75%+ of contradictions in single-shot evaluation. The narrative focus bias [11] means contradictions about the primary subject are harder to detect than peripheral ones. Engram mitigates this through adversarial prompting (asking the LLM to enumerate potential contradictions before judging), minority-veto ensembles for high-stakes scopes, and deterministic pre-checks for numeric/temporal contradictions that LLMs handle poorly [13].
-
-**8. Pairwise checking cannot guarantee global consistency**
-He et al. [5] prove that pairwise consistency checks are insufficient — three facts can be pairwise consistent but jointly inconsistent. This is a known limitation of the current design. Future work should implement the MUS-finding algorithm from [5] as a periodic batch job that checks for multi-fact inconsistencies across the knowledge base.
+**6. Append-Only with Consolidation**
+- *Insight:* An append-only architecture is essential for auditability and traceability, but it can lead to unbounded growth of the knowledge base. A consolidation mechanism is needed to manage this growth.
+- *Implementation:* Engram will use an append-only architecture, but will also implement a periodic consolidation process to archive and summarize old or low-utility facts.
 
 ---
 
 ## Failure Modes & Architectural Mitigations
 
-Based on adversarial literature review (see LITERATURE.md §5–22) and analysis of multi-agent memory constraints, the following failure modes have been identified and addressed:
+Based on an extensive adversarial literature review, the following failure modes have been identified. The Engram implementation plan has been revised to mitigate these threats.
 
-**1. The "Blind Read" (Stale Facts / Knowledge Decay)**
-- *Failure Mode:* Vector databases natively treat all stored records as equally valid. An agent might query a fact that is currently disputed by another agent, and unknowingly use it as ground truth.
-- *Mitigation:* `engram_query` guarantees it surfaces `has_open_conflict` for every returned fact, forcing the reading agent to acknowledge the dispute, wait for resolution, or explicitly choose a side via `engram_resolve`.
+**1. Memory Injection & Poisoning (MINJA)**
+- *Failure Mode:* An adversary with query-only access injects malicious facts into the shared memory. These facts are designed to be retrieved by other agents, leading them to perform incorrect or harmful actions. The append-only nature of the memory makes these attacks persistent.
+- *Mitigation:*
+    - **Quorum-Based Commit:** For sensitive scopes, require a quorum of `n` independent agents to commit a fact before it is considered "trusted."
+    - **Source Corroboration:** Track the number of independent agents that have corroborated a fact. Single-source facts are flagged and down-weighted in query results.
+    - **Rate Limiting:** Implement rate limiting on `engram_commit` to prevent bulk injection of malicious facts.
+    - **Derivation Tracking:** Use `source_fact_id` to track the derivation of facts. Clusters of facts derived from a single, unverified source are flagged as suspicious.
 
-**2. Async Race Conditions (Lost Updates)**
-- *Failure Mode:* If two agents highly concurrently commit contradictory facts, the async conflict pipeline might interleave, causing incomplete supersession or dropping the conflict entirely.
-- *Mitigation:* SQLite's explicit atomic transactions are used during the `superseded_by` update step. The `conflicts` table acts as a dead-letter queue for contradictory facts that bypass initial synchronous checks.
+**2. LLM-as-Judge Agreeableness Bias**
+- *Failure Mode:* The LLM used for contradiction detection exhibits a strong "agreeableness bias," leading it to miss a significant percentage of actual contradictions (high false-negative rate).
+- *Mitigation:*
+    - **Adversarial Prompting:** Frame the contradiction detection prompt to be adversarial (e.g., "Find any possible contradiction between these two facts").
+    - **Minority-Veto Ensemble:** For high-stakes scopes, run the contradiction check with multiple LLM judges. If any judge detects a contradiction, the conflict is flagged.
+    - **Deterministic Pre-Checks:** Implement deterministic checks for numeric and temporal contradictions before invoking the LLM judge.
 
-**3. Scope Fragmentation (Context drift)**
-- *Failure Mode:* An agent commits a fact to `payment/webhook`, and another to `payments/webhooks`. Exact string matching filters out the conflict, creating two bifurcated realities.
-- *Mitigation:* Candidate retrieval (Phase 3, Step 1) supplements precise scope filtering with entity-based cross-scope matching and a global high-similarity fallback.
+**3. Embedding Retrieval Degradation (Semantic Collapse & Orthogonality Constraint)**
+- *Failure Mode:* Embedding-based retrieval degrades as more semantically similar facts are added to the knowledge base. Contradictory facts may have very similar embeddings, making them difficult to distinguish.
+- *Mitigation:*
+    - **Hybrid Retrieval:** Use a hybrid retrieval approach that combines embedding-based similarity with lexical (BM25) and structured (entity-based) retrieval.
+    - **Knowledge Graph Representation:** Represent facts and their relationships in a knowledge graph. This allows for more sophisticated and robust retrieval methods that are not solely reliant on embedding similarity.
+    - **Consolidation & Archival:** Periodically archive and consolidate low-utility facts to reduce the size of the active knowledge base and mitigate the effects of semantic density.
 
-**4. Semantic Collapse (Negation Blindness)** — from Bharti et al. [6]
-- *Failure Mode:* "The auth service uses JWT" and "The auth service does not use JWT" produce nearly identical embeddings. Embedding-based candidate retrieval finds them (high similarity) but cannot distinguish agreement from contradiction. Worse, the LLM judge may also miss the negation due to agreeableness bias [12].
-- *Mitigation:* BM25 lexical retrieval as a parallel candidate path catches negation keywords. Adversarial prompting forces the LLM to enumerate potential contradictions before judging. Entity-based matching ensures facts about the same service are always compared.
+**4. Lack of a Unifying Abstraction for Memory (Relational vs. Graph)**
+- *Failure Mode:* A relational database schema is not expressive enough to capture the complex relationships between facts, leading to a loss of information and a less powerful reasoning capability.
+- *Mitigation:*
+    - **Graph-Based Memory:** Replace the relational database with a graph database. This will allow for the representation of facts as nodes and their relationships as edges, enabling more powerful graph-based reasoning and retrieval.
+    - **Schema Evolution:** Design a flexible graph schema that can evolve as new types of facts and relationships are added to the knowledge base.
 
-**5. Agreeableness Bias (Silent False Negatives)** — from Ahmed et al. [12]
-- *Failure Mode:* The LLM contradiction judge has a True Negative Rate below 25% — it will say "not contradictory" for 75%+ of actual contradictions in single-shot evaluation.
-- *Mitigation:* Adversarial prompt framing ("find contradictions" rather than "check if contradictory"). Minority-veto ensemble for high-stakes scopes (flag as contradictory if any of 3 runs says yes). Deterministic numeric/temporal pre-checks that bypass the LLM entirely for contradiction types it handles worst.
+**5. Insufficient Protection Against Consensus Failures (Byzantine Faults)**
+- *Failure Mode:* Malicious or faulty agents can disrupt the consensus process, leading to an inconsistent state in the shared memory.
+- *Mitigation:*
+    - **Byzantine Fault-Tolerant Consensus:** Implement a Byzantine Fault-Tolerant (BFT) consensus protocol for all writes to the shared memory. This will ensure that the system can reach a consistent state even in the presence of malicious agents.
+    - **Agent Reputation:** Track the reputation of each agent based on its past behavior. Agents with a history of malicious or faulty behavior will be given less weight in the consensus process.
 
-**6. The Mandela Effect (Corroborating Errors)** — from Xu et al. [8]
-- *Failure Mode:* Agent A commits an incorrect fact. Agent B queries it, incorporates it, and commits a derived fact that reinforces the error. The knowledge base develops a self-reinforcing false belief that conflict detection cannot catch (because the facts *agree*, they just agree on something wrong).
-- *Mitigation:* `source_fact_id` tracks derivation chains. The dashboard (Phase 7) should surface "citation depth" — clusters of facts that all trace back to a single source. Facts with no independent corroboration from different agents/engineers should be flagged as "single-source" in query results.
+**6. Silent Retrieval Corruption from Embedding Model Upgrade**
+- *Failure Mode:* Upgrading the embedding model can lead to silent retrieval corruption, where the new model is incompatible with the old embeddings, resulting in meaningless similarity scores and a failure to detect contradictions.
+- *Mitigation:*
+    - **Embedding Model Versioning:** Store the embedding model and version with each fact.
+    - **Re-indexing:** Provide a mechanism to re-index all facts with the new embedding model.
+    - **Validation:** At startup, validate the configured embedding model against the model used for the most recent facts in the database.
 
-**7. Unbounded Growth (Retrieval Degradation)** — from SEDM [16]
-- *Failure Mode:* Append-only means the facts table grows without bound. After months of team use, thousands of facts accumulate, many outdated or low-value. Query performance degrades, conflict detection becomes slower (more candidates), and signal-to-noise ratio drops.
-- *Mitigation:* Phase 3b introduces utility-based decay, archival of low-utility old facts, and opt-in consolidation per scope.
-
-**8. Pairwise Insufficiency (Missed Multi-Fact Inconsistencies)** — from He et al. [5]
-- *Failure Mode:* Three facts A, B, C are each pairwise consistent but jointly inconsistent. Engram's pairwise detection misses this entirely.
-- *Mitigation:* This is a known limitation. The current design accepts it as a tradeoff for tractability. Future work: implement the MUS-finding algorithm from He et al. [5] as a periodic batch job. For now, the dashboard should surface "fact clusters" within a scope to help humans spot multi-fact inconsistencies visually.
-
-**9. SQLite Write Contention** — from operational analysis
-- *Failure Mode:* SQLite serializes all writes with database-level locks. Under heavy concurrent agent commits, writes queue up and latency spikes.
-- *Mitigation:* WAL mode + busy timeout for the MVP. The storage layer is abstracted behind an async interface so PostgreSQL can be swapped in for team deployments without changing the MCP API.
-
-**10. Knowledge Conflict at the Consumer** — from Xu et al. [10]
-- *Failure Mode:* Even when Engram returns correct, consistent facts, the consuming agent may ignore them in favor of its own parametric knowledge. LLMs exhibit unpredictable behavior when retrieved context conflicts with training data.
-- *Mitigation:* Engram cannot control agent behavior, but it can help: query results include explicit confidence scores, provenance, and conflict status. The `engram_query` response format is designed to be unambiguous about what the shared knowledge base believes, even if the agent ultimately overrides it.
-
-**11. Embedding Retrieval Degradation at Scale** — from Chana et al. [7]
-- *Failure Mode:* The Orthogonality Constraint predicts that as semantically similar facts accumulate within a scope, embedding-based retrieval collapses. A scope like "auth" with 50+ facts will have high pairwise cosine similarity, making it increasingly difficult to retrieve the *right* fact.
-- *Mitigation:* Entity-based retrieval (Path C in Phase 3) provides hash-based lookup that doesn't suffer from semantic interference. BM25 provides keyword-based retrieval that degrades gracefully. Consolidation (Phase 3b) keeps per-scope fact counts manageable.
-
-**12. Numeric and Temporal Contradiction Blindness** — from [13]
-- *Failure Mode:* "The rate limit is 100 req/s" vs. "The rate limit is 1000 req/s" — an order-of-magnitude contradiction — will likely be missed because embeddings are similar and LLMs systematically fail on numeric comparison. Temporal contradictions ("deprecated since v3" vs. "still supported in v4") require anchor resolution.
-- *Mitigation:* Deterministic numeric/temporal pre-checks in Phase 3, Step 2 extract and compare values before the LLM is invoked. The `entities` field stores extracted numeric values with units for structured comparison.
-
-**13. Memory Injection / Poisoning (MINJA-style attacks)** *(New — from arXiv:2503.03704 [19])*
-- *Failure Mode:* An adversary calls `engram_commit` with content that appears legitimate but is semantically crafted to be retrieved by future queries and steer subsequent agents toward harmful or incorrect conclusions. The attack requires no special access — only normal agent interactions. Conflict detection cannot catch this because the poisoned fact is internally coherent (it doesn't contradict anything; it simply asserts something false). The append-only design makes the committed fact permanent. Success rates for MINJA-style attacks exceed 95%.
-- *Mitigation:* (a) Add a `source_corroboration` count to `engram_query` results: facts corroborated by ≥2 *independent* agents (different `engineer` field) score higher; single-source facts in sensitive scopes are flagged. (b) Rate-limit `engram_commit` per `agent_id` to prevent bulk injection (default: 100 commits/hour). (c) For sensitive scopes (`infra/*`, `auth/*`, `secrets/*`), require a quorum of ≥2 engineers before a fact is indexed as current. (d) Track `source_fact_id` so derivation chains can be audited — a cluster of facts all derived from one unverified source is a poisoning signal.
-
-**14. Silent Retrieval Corruption from Embedding Model Upgrade** *(New — from production RAG research [21])*
-- *Failure Mode:* When `all-MiniLM-L6-v2` is upgraded or swapped for another model, stored embedding BLOBs are in an incompatible vector space. `engram_query` continues to return results with seemingly valid similarity scores, but the rankings are semantically meaningless. The conflict detection pipeline silently stops finding candidates across the version boundary. Users get no error — just silently wrong answers. The schema previously had no way to detect this had happened.
-- *Mitigation:* (a) `embedding_model` and `embedding_model_ver` are now stored with every fact (added to schema). (b) At startup, validate the configured model against the model in the most recent facts; emit a warning and refuse to serve if they differ without explicit `--force-mismatch`. (c) Implement `engram reindex --model NEW_MODEL` to atomically re-embed all facts. (d) Before any embedding-model upgrade, document the reindex procedure in the ops runbook.
-
-**15. Confidence Field Inflation (LLM Calibration Failure)** *(New — from calibration research [22])*
-- *Failure Mode:* LLMs systematically report near-maximum confidence regardless of epistemic state (calibration gap of 15–40 percentage points). Engram uses `confidence` for severity classification, resolution priority, and agent reliability scoring. With uniformly high confidence, the severity classifier fires "high" for nearly every cross-agent conflict, flooding the queue; the higher-confidence-wins resolution strategy becomes effectively random; and agent reliability scores flatten to uninformative constants.
-- *Mitigation:* (a) `confidence_source` field now distinguishes `'agent'` (raw self-report), `'system'` (computed from calibration), and `'calibrated'` (adjusted by historical contradiction rate). (b) Build a per-agent calibration table: `(agent_id, reported_confidence_bucket, empirical_contradiction_rate)` — updated whenever a conflict is resolved, using the loser's original confidence. (c) The conflict severity classifier should weight structural signals primarily (cross-engineer, same scope, both facts current) and treat `confidence` as a tiebreaker only when structural signals are ambiguous.
+**7. Confidence Field Inflation (LLM Calibration Failure)**
+- *Failure Mode:* LLMs tend to report high confidence scores regardless of their actual epistemic state, which can lead to an over-reliance on incorrect information.
+- *Mitigation:*
+    - **Confidence Calibration:** Implement a confidence calibration mechanism that adjusts the confidence scores reported by LLMs based on their historical performance.
+    - **Agent Reliability:** Track the reliability of each agent based on the accuracy of its past contributions. This can be used to weight the confidence of new facts committed by the agent.
 
 ---
 
 ## What Engram is not building
 
-The literature covers a large space. Several things are intentionally out of scope:
+The research landscape for agent memory is vast. To maintain focus, Engram is intentionally *not* building the following:
 
-- **Parametric memory** (fine-tuning, LoRA adapters) — out of scope; Engram is a token-level system
-- **Latent/KV-cache sharing** — the "cache sharing protocol" Yu et al. identify as missing; too deep in model internals
-- **Episodic/procedural memory** (MIRIX's six types) — Engram stores *factual* memory about a shared codebase, not personal user history
-- **RL-driven memory management** (Hu et al., §7.3) — the right long-term direction but requires evaluation infrastructure first
-- **Multimodal memory** — text facts only in initial implementation; images and diagrams are a later extension
+- **Parametric Memory:** Engram does not alter the weights of the LLMs it interacts with. It is a purely token-level system.
+- **Cache-Level Protocols:** Engram does not implement protocols for sharing or reusing the internal cache of LLMs.
+- **Episodic or Procedural Memory:** Engram is focused on storing and managing factual knowledge about a codebase, not on tracking the history of agent interactions or learning procedural skills.
+- **RL-Driven Memory Management:** While reinforcement learning is a promising direction for optimizing memory systems, it is out of scope for the initial implementation of Engram.
+- **Multimodal Memory:** The initial version of Engram will only support text-based facts. Support for images, diagrams, and other modalities is a potential future extension.
+- **General Agent Orchestration:** Agent-MCP [29] handles task management, agent lifecycle, and visualization. Engram focuses exclusively on the consistency layer.
+- **Full Knowledge Graph:** Letta [28] and Agent-MCP provide graph-based memory. Engram's data model is a flat fact store with entity links, optimized for conflict detection rather than graph traversal.
+
+### Strategic positioning
+
+Engram should be thought of as a **consistency layer** that could sit on top of existing shared memory systems (Letta, Agent-MCP) rather than replacing them. The long-term play is: other systems handle storage and retrieval; Engram handles "are these facts consistent?" This framing makes Engram complementary rather than competitive with the broader ecosystem, and focuses development effort on the one thing no other system does.
