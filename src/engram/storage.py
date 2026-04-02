@@ -75,10 +75,12 @@ class Storage:
             "keywords", "entities", "artifact_hash", "embedding",
             "embedding_model", "embedding_ver", "committed_at",
             "valid_from", "valid_until", "ttl_days",
+            "memory_op", "supersedes_fact_id",
         ]
+        defaults = {"memory_op": "add"}
         placeholders = ", ".join(["?"] * len(cols))
         col_names = ", ".join(cols)
-        values = [fact.get(c) for c in cols]
+        values = [fact.get(c, defaults.get(c)) for c in cols]
         cursor = await self.db.execute(
             f"INSERT INTO facts ({col_names}) VALUES ({placeholders})", values
         )
@@ -481,6 +483,31 @@ class Storage:
             ),
         )
         await self.db.commit()
+
+    async def get_facts_by_lineage(self, lineage_id: str) -> list[dict]:
+        """Return all facts with the given lineage_id, most recent first."""
+        cursor = await self.db.execute(
+            "SELECT * FROM facts WHERE lineage_id = ? ORDER BY committed_at DESC",
+            (lineage_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_active_facts_with_embeddings(
+        self, scope: str, limit: int = 20
+    ) -> list[dict]:
+        """Return active facts in scope that have embeddings (for auto-update scoring)."""
+        cursor = await self.db.execute(
+            """SELECT * FROM facts
+               WHERE scope = ?
+                 AND valid_until IS NULL
+                 AND embedding IS NOT NULL
+               ORDER BY committed_at DESC
+               LIMIT ?""",
+            (scope, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
 
     async def update_fact_embedding(self, fact_id: str, embedding: bytes) -> None:
         """Update the embedding for an existing fact.

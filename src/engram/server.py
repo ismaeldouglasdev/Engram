@@ -70,6 +70,7 @@ async def engram_commit(
     provenance: str | None = None,
     fact_type: str = "observation",
     ttl_days: int | None = None,
+    operation: str = "add",
 ) -> dict[str, Any]:
     """Commit a claim about the codebase to shared team memory.
 
@@ -117,8 +118,18 @@ async def engram_commit(
       automatically expires after this period. Useful for facts about
       external dependencies, API contracts, or infrastructure that
       change frequently. Default: null (no expiry).
+    - operation: Memory CRUD intent. One of:
+        "add"    (default) — new independent fact.
+        "update" — supersede an outdated fact. If corrects_lineage is
+                   omitted, the engine automatically finds the most
+                   semantically similar active fact in scope and supersedes
+                   it (no lineage tracking required from the caller).
+        "delete" — retire an existing fact without replacement; requires
+                   corrects_lineage (the lineage_id to close).
+        "none"   — no-op; signals the agent has nothing new to add.
 
-    Returns: {fact_id, committed_at, duplicate, conflicts_detected}
+    Returns: {fact_id, committed_at, duplicate, conflicts_detected,
+              memory_op, supersedes_fact_id}
     """
     engine = get_engine()
 
@@ -150,6 +161,7 @@ async def engram_commit(
         provenance=provenance,
         fact_type=fact_type,
         ttl_days=ttl_days,
+        operation=operation,
     )
 
     # Record rate limit usage after successful commit

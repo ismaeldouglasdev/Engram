@@ -18,6 +18,11 @@ Five rounds of research shaped the architecture:
   NLI model sizing for CPU deployment, added fact expiry (TTL), secret detection, provenance
   tracking, and fact typing. It also identified Turso/libSQL as the v2 storage upgrade path
   and recalibrated the competitive landscape against Mem0, Cipher, SAMEP, and Agent KB.
+- **Round 7** — MemFactory (arXiv 2603.29493, Guo et al., 2026) — introduced explicit CRUD
+  memory operations (ADD/UPDATE/DEL/NONE) and a semantic auto-updater. This replaced implicit
+  "agents track lineage IDs manually" with a first-class `operation` parameter on `engram_commit`,
+  and added a schema-level audit trail (`memory_op`, `supersedes_fact_id`) for every lifecycle
+  operation. Schema advanced to version 3.
 
 A fourth input — the live MCP ecosystem — shaped the tool surface, transport, security,
 and deployment model. This includes:
@@ -197,6 +202,7 @@ def engram_commit(
     provenance: str | None = None,
     fact_type: str = "observation",
     ttl_days: int | None = None,
+    operation: str = "add",  # "add" | "update" | "delete" | "none"
 ) -> dict:
     """Commit a claim about the codebase to shared team memory.
 
@@ -239,8 +245,18 @@ def engram_commit(
       automatically expires after this period. Useful for facts about
       external dependencies, API contracts, or infrastructure that
       change frequently. Default: null (no expiry).
+    - operation: Memory CRUD intent (MemFactory pattern). One of:
+        "add"    (default) — new independent fact.
+        "update" — supersede an outdated fact. If corrects_lineage is
+                   omitted, the engine automatically finds the most
+                   semantically similar active fact in scope (cosine
+                   similarity ≥ 0.75) and supersedes it.
+        "delete" — retire an existing lineage without replacement.
+                   Requires corrects_lineage.
+        "none"   — no-op; signals the agent has nothing new to add.
 
-    Returns: {claim_id, committed_at, duplicate, conflicts_detected}
+    Returns: {fact_id, committed_at, duplicate, conflicts_detected,
+              memory_op, supersedes_fact_id}
     """
 ```
 
@@ -464,7 +480,9 @@ CREATE TABLE facts (
     committed_at     TEXT NOT NULL,      -- ISO 8601
     valid_from       TEXT NOT NULL,      -- ISO 8601 (= committed_at for new facts)
     valid_until      TEXT,              -- NULL = currently valid; set when superseded or expired
-    ttl_days         INTEGER            -- optional; when set, valid_until = valid_from + ttl_days
+    ttl_days         INTEGER,           -- optional; when set, valid_until = valid_from + ttl_days
+    memory_op        TEXT NOT NULL DEFAULT 'add',  -- CRUD intent: add | update | delete | none
+    supersedes_fact_id TEXT             -- fact_id closed by this update/delete operation (audit trail)
 );
 
 -- Validity window is the primary query filter
@@ -489,6 +507,13 @@ CREATE VIRTUAL TABLE facts_fts USING fts5(
 | `provenance` | MINJA threat model, SEDM | Evidence trail for auditability. Facts with provenance are marked `verified` in query results. |
 | `artifact_hash` | SEDM's verifiable write admission | SHA-256 of the referenced file/config at commit time. Enables staleness detection on query. |
 | `ttl_days` | Round 6 expiry analysis | Automatic fact expiry. When set, a background job sets `valid_until = valid_from + ttl_days`. |
+
+**New columns from Round 7 (MemFactory):**
+
+| Column | Source | Purpose |
+|---|---|---|
+| `memory_op` | MemFactory CRUD pattern (Memory-R1) | Stores the explicit intent of each commit: `add`, `update`, `delete`, or `none`. Enables lifecycle auditing and downstream analysis of memory update patterns. |
+| `supersedes_fact_id` | MemFactory semantic Updater | Records which specific fact was closed by an `update` or `delete` operation. Provides a direct audit link between new and superseded facts, beyond the lineage chain alone. |
 
 **Why `valid_until` replaces all Round 2 versioning machinery:**
 
@@ -664,6 +689,10 @@ and flagged with a warning.
 
 ### `engram_commit` Pipeline
 
+0. **Resolve `operation`** — one of `add`, `update`, `delete`, `none` (MemFactory CRUD pattern):
+   - `none`: return immediately, no write.
+   - `delete`: close the lineage specified by `corrects_lineage`, no new fact inserted.
+   - `update` / `add`: continue with steps 1–13.
 1. **Validate inputs** (Pydantic)
 2. **Secret scan (<1ms):** Regex scanner checks `content` for common secret patterns
    (API keys, JWT tokens, AWS credentials, connection strings). If detected, reject
@@ -715,16 +744,24 @@ and flagged with a warning.
    admission](https://arxiv.org/abs/2509.09498) — full replay verification is too
    heavy, but provenance tracking makes poisoned facts auditable and distinguishable
    from verified ones. See §Memory Injection Defense for the full threat model.
-8. **Determine `lineage_id`:** if `corrects_lineage` is provided, inherit it (this is a
-   correction of an existing fact). Otherwise, generate a new UUID.
-9. If correcting an existing fact: `UPDATE facts SET valid_until = NOW() WHERE lineage_id = corrects_lineage AND valid_until IS NULL`
+8. **Determine `lineage_id` and resolve supersession** (MemFactory Updater pattern):
+   - If `operation = "update"` and `corrects_lineage` is **not** provided: run the
+     **semantic auto-updater** — compare the new embedding against all active facts with
+     embeddings in the same scope; if the best cosine similarity ≥ 0.75, automatically
+     set `corrects_lineage` to that fact's lineage and `supersedes_fact_id` to its ID.
+     If no match above threshold, fall back to `add` behavior.
+   - If `corrects_lineage` is provided (either explicitly or via auto-updater): inherit
+     it as `lineage_id` and record `supersedes_fact_id` from the most recent fact in
+     that lineage.
+   - Otherwise: generate a new UUID for `lineage_id`.
+9. If superseding an existing fact: `UPDATE facts SET valid_until = NOW() WHERE lineage_id = corrects_lineage AND valid_until IS NULL`
 10. **Handle TTL:** If `ttl_days` is provided, set `valid_until = valid_from + ttl_days`.
     A background job also periodically scans for facts where `ttl_days IS NOT NULL AND
     valid_until IS NULL AND valid_from + ttl_days < NOW()` and closes their windows.
-11. `INSERT INTO facts (..., valid_from = NOW(), valid_until = NULL)`
+11. `INSERT INTO facts (..., valid_from = NOW(), valid_until = NULL, memory_op = operation, supersedes_fact_id = ...)`
 12. **Update FTS5 index:** `INSERT INTO facts_fts(rowid, content, scope, keywords) VALUES (...)`
 13. Post the new `fact_id` to the **detection queue** (in-memory `asyncio.Queue`).
-    Return immediately: `{fact_id, committed_at, duplicate: false}`
+    Return immediately: `{fact_id, committed_at, duplicate: false, memory_op, supersedes_fact_id}`
 
 **Write lock is released at step 11.** Detection runs without holding any lock.
 
@@ -1319,6 +1356,18 @@ structural prerequisite for Phase 2 being usable under any real load.
 - **Mitigation:** Deterministic regex scanner at commit time rejects content matching
   common secret patterns. This is enforcement, not advisory.
 
+### 15. Silent Fact Accumulation Without Update Intent (NEW — Round 7)
+- **Failure:** When an agent learns that an existing fact is outdated, it must know and
+  pass the specific `lineage_id` to supersede it. Without that, both the old and new
+  facts coexist as "current," creating silent duplication and inflating the conflict
+  detection candidate set. Agents often lack access to lineage IDs from prior sessions.
+- **Mitigation (MemFactory CRUD pattern):** The `operation="update"` parameter triggers
+  the semantic auto-updater: the engine embeds the new content, scores it against all
+  active facts in scope, and automatically supersedes the best match above cosine
+  similarity 0.75. The agent does not need to know or track the lineage ID. This reduces
+  the cognitive burden on the agent and prevents silent duplication. The `memory_op` and
+  `supersedes_fact_id` columns provide a complete audit trail of every lifecycle operation.
+
 ---
 
 ## Key Design Constraints (Refined)
@@ -1349,7 +1398,16 @@ or address a documented failure mode. The Round 3 rewrite removed 4 components
 (BFT, graph DB, quorum commits, `facts_archive` table) and replaced 4 mechanisms
 with 1 temporal invariant. Round 6 added 4 features (provenance, TTL, secret scan,
 fact typing) but removed 1 dependency (`rank_bm25` → FTS5) and corrected 2 false
-claims (latency, regex recall).
+claims (latency, regex recall). Round 7 added 1 parameter (`operation`) and 2 schema
+columns (`memory_op`, `supersedes_fact_id`) in exchange for eliminating the agent-side
+burden of lineage ID tracking for update operations.
+
+**7. Explicit Memory Operation Intent**  
+Every commit carries an explicit `memory_op` (`add`, `update`, `delete`, `none`).
+This is the MemFactory CRUD invariant: the engine should never have to infer whether
+an agent intends to add new information or correct old information — the agent declares
+its intent, and the engine enforces it. The semantic auto-updater handles the common
+case where the agent knows its intent (`update`) but not the specific lineage to supersede.
 
 **6. Honest Performance Claims**  
 All latency and throughput numbers are stated for the default deployment target (CPU,
@@ -1369,7 +1427,10 @@ are presented as production expectations.
   Engram protects against accidental inconsistency and makes poisoning detectable
   via provenance tracking; a determined attacker with write access can still poison
   the store.
-- **RL-driven memory management:** Out of scope.
+- **RL-driven memory policy optimization:** Fine-tuning LLMs with GRPO to learn better
+  memory management policies (MemFactory's Trainer Layer) is out of scope for Engram's
+  server-side backend. Engram adopts the *structural insights* from Memory-RL research
+  (explicit CRUD operations, semantic auto-update) without the training infrastructure.
 - **Multimodal memory:** Text facts only in v1.
 - **General agent orchestration:** Letta, Agent-MCP handle this. Engram is the
   consistency layer only.

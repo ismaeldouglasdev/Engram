@@ -163,6 +163,7 @@ def build_rest_routes(
         provenance = body.get("provenance")
         fact_type = body.get("fact_type", "observation")
         ttl_days = body.get("ttl_days")
+        operation = body.get("operation", "add")
 
         # Basic validation
         if not content:
@@ -207,6 +208,7 @@ def build_rest_routes(
                 provenance=provenance,
                 fact_type=fact_type,
                 ttl_days=ttl_days,
+                operation=operation,
             )
         except ValueError as exc:
             return _error(str(exc))

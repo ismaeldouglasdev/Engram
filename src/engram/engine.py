@@ -82,10 +82,56 @@ class EngramEngine:
         fact_type: str = "observation",
         ttl_days: int | None = None,
         artifact_hash: str | None = None,
+        operation: str = "add",
     ) -> dict[str, Any]:
-        """Commit a fact to shared memory. Returns immediately; detection is async."""
+        """Commit a fact to shared memory. Returns immediately; detection is async.
+
+        The ``operation`` parameter follows the MemFactory CRUD pattern:
+        - ``add``    (default) — insert a new independent fact.
+        - ``update`` — supersede the most semantically similar active fact in
+                       the same scope.  If ``corrects_lineage`` is supplied it
+                       is used directly; otherwise the engine runs an embedding
+                       search and picks the best match above the 0.75 threshold.
+        - ``delete`` — retire an existing fact without replacement.
+                       ``corrects_lineage`` must identify the lineage to close.
+                       ``content`` should briefly explain why it is being retired.
+        - ``none``   — no-op.  Useful when a retrieval was sufficient and the
+                       agent wants to signal it has nothing new to commit.
+        """
 
         # Step 1: Validate
+        if operation not in ("add", "update", "delete", "none"):
+            raise ValueError("operation must be 'add', 'update', 'delete', or 'none'.")
+
+        # none — caller signals no new information; return without writing
+        if operation == "none":
+            return {
+                "fact_id": None,
+                "committed_at": datetime.now(timezone.utc).isoformat(),
+                "duplicate": False,
+                "conflicts_detected": False,
+                "memory_op": "none",
+            }
+
+        # delete — close an existing lineage and return without a new fact
+        if operation == "delete":
+            if not corrects_lineage:
+                raise ValueError(
+                    "operation='delete' requires corrects_lineage (lineage_id to retire)."
+                )
+            await self.storage.close_validity_window(lineage_id=corrects_lineage)
+            logger.info(
+                "Memory delete: closed lineage %s by agent %s", corrects_lineage, agent_id
+            )
+            return {
+                "fact_id": None,
+                "committed_at": datetime.now(timezone.utc).isoformat(),
+                "duplicate": False,
+                "conflicts_detected": False,
+                "memory_op": "delete",
+                "deleted_lineage": corrects_lineage,
+            }
+
         if not content or not content.strip():
             raise ValueError("Content cannot be empty.")
         if not scope or not scope.strip():
@@ -131,10 +177,44 @@ class EngramEngine:
         # Step 8: Register/update agent
         await self.storage.upsert_agent(agent_id, engineer or "unknown")
 
-        # Step 9: Determine lineage_id
+        # Step 9: Determine lineage_id and handle update/auto-update
+        supersedes_fact_id: str | None = None
+        if operation == "update" and not corrects_lineage:
+            # Auto-updater: find the most semantically similar active fact in scope
+            # and supersede it (MemFactory's semantic Updater pattern)
+            candidates = await self.storage.get_active_facts_with_embeddings(
+                scope=scope, limit=20
+            )
+            best_sim = 0.0
+            best_fact = None
+            for candidate in candidates:
+                if candidate.get("embedding"):
+                    c_emb = embeddings.bytes_to_embedding(candidate["embedding"])
+                    sim = embeddings.cosine_similarity(emb, c_emb)
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_fact = candidate
+            if best_fact and best_sim >= 0.75:
+                corrects_lineage = best_fact["lineage_id"]
+                supersedes_fact_id = best_fact["id"]
+                logger.info(
+                    "Auto-updater: new fact will supersede fact %s (sim=%.3f) in scope '%s'",
+                    best_fact["id"][:12], best_sim, scope,
+                )
+            else:
+                logger.debug(
+                    "Auto-updater: no match above threshold (best_sim=%.3f) in scope '%s'; "
+                    "falling back to add",
+                    best_sim, scope,
+                )
+
         if corrects_lineage:
             lineage_id = corrects_lineage
-            # Close the old fact's validity window
+            # Record the most recent fact in the lineage for audit trail
+            if not supersedes_fact_id:
+                all_lineage = await self.storage.get_facts_by_lineage(corrects_lineage)
+                if all_lineage:
+                    supersedes_fact_id = all_lineage[0]["id"]
             await self.storage.close_validity_window(lineage_id=corrects_lineage)
         else:
             lineage_id = uuid.uuid4().hex
@@ -170,6 +250,8 @@ class EngramEngine:
             "valid_from": now,
             "valid_until": valid_until,
             "ttl_days": ttl_days,
+            "memory_op": operation,
+            "supersedes_fact_id": supersedes_fact_id,
         }
 
         # Step 11: INSERT (write lock held ~1ms)
@@ -186,6 +268,8 @@ class EngramEngine:
             "committed_at": now,
             "duplicate": False,
             "conflicts_detected": False,  # detection is async
+            "memory_op": operation,
+            "supersedes_fact_id": supersedes_fact_id,
         }
 
     # ── engram_query ─────────────────────────────────────────────────

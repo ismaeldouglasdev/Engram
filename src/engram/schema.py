@@ -5,7 +5,7 @@ Supersession, correction, archival, and versioning are all expressed
 through this single primitive.
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Incremental ALTER TABLE migrations keyed by target version.
 # Each entry is a list of SQL statements to execute in order.
@@ -19,6 +19,12 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE conflicts ADD COLUMN suggestion_generated_at TEXT",
         "ALTER TABLE conflicts ADD COLUMN auto_resolved INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE conflicts ADD COLUMN escalated_at TEXT",
+    ],
+    3: [
+        # Explicit memory operation type (MemFactory CRUD pattern: add/update/delete/none)
+        "ALTER TABLE facts ADD COLUMN memory_op TEXT NOT NULL DEFAULT 'add'",
+        # For update/delete ops: which fact_id was superseded by this operation
+        "ALTER TABLE facts ADD COLUMN supersedes_fact_id TEXT",
     ],
 }
 
@@ -48,7 +54,9 @@ CREATE TABLE IF NOT EXISTS facts (
     committed_at     TEXT NOT NULL,
     valid_from       TEXT NOT NULL,
     valid_until      TEXT,
-    ttl_days         INTEGER
+    ttl_days         INTEGER,
+    memory_op        TEXT NOT NULL DEFAULT 'add',   -- CRUD intent: add/update/delete/none
+    supersedes_fact_id TEXT                         -- fact_id closed by this update/delete op
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_validity     ON facts(scope, valid_until);

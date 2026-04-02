@@ -338,6 +338,37 @@ AGENTS.md is a plain Markdown file at the repository root that gives AI coding a
 
 **Impact on Engram:** Engram ships a reference AGENTS.md template that tells agents when to query shared memory, when to commit facts, how to interpret conflicts, and what scopes to use. This is zero-cost distribution — a template in the docs that users drop into their repos.
 
+## [5] MemFactory: Unified Inference & Training Framework for Agent Memory
+
+**Authors:** Ziliang Guo, Ziheng Li, Bo Tang, Feiyu Xiong, Zhiyu Li
+**Affiliations:** MemTensor
+**Venue:** arXiv preprint, April 1, 2026
+**ArXiv:** [2603.29493](https://arxiv.org/abs/2603.29493)
+**File:** [`papers/2603.29493v2.pdf`](papers/2603.29493v2.pdf)
+
+### Summary
+
+MemFactory is a modular framework for memory-augmented LLM agents. It decomposes the memory lifecycle into four layers — *Module*, *Agent*, *Environment*, and *Trainer* — and applies GRPO (Group Relative Policy Optimization) to fine-tune memory management policies. The Module Layer defines three atomic operations: **Extractor** (parse raw context into structured memories), **Updater** (assign ADD/UPDATE/DEL/NONE to each candidate), and **Retriever** (fetch relevant memories, with an optional LRM-based reranker). Empirically validates 14.8% gains over baselines on the MemAgent benchmark.
+
+### Key Concepts
+
+- **CRUD memory operations (Memory-R1 pattern):** Each incoming memory is explicitly assigned one of ADD, UPDATE, DEL, or NONE. This makes agent intent explicit and prevents silent accumulation of stale facts.
+- **Semantic auto-updater:** When an agent signals UPDATE without specifying what to supersede, the system compares the new content against existing memories via embedding similarity and automatically closes the best match above a threshold — no manual lineage tracking required.
+- **RerankRetriever:** Post-retrieval reranking with a Large Reasoning Model to improve precision. Engram already uses RRF fusion (embedding + FTS5); this identifies a future extension point.
+- **GRPO training layer:** Trains the agent's memory policy using multi-dimensional reward signals (format compliance, LLM-as-a-judge). Not directly applicable to Engram's server-side architecture.
+
+### Impact on Engram
+
+The CRUD operations pattern was directly implemented:
+
+1. **`operation` parameter on `engram_commit`** — agents now pass `"add"` (default), `"update"`, `"delete"`, or `"none"` to make their intent explicit.
+2. **Semantic auto-updater** — `operation="update"` without `corrects_lineage` triggers an embedding search across active facts in scope; the best match above 0.75 cosine similarity is automatically superseded.
+3. **`memory_op` + `supersedes_fact_id` columns** — stored per fact for a complete audit trail of memory lifecycle operations.
+4. **`operation="delete"`** — retires an entire lineage without inserting a replacement fact.
+5. **`operation="none"`** — explicit no-op that signals the agent has nothing new to add (useful in multi-agent pipelines where a tool call is required by protocol but the agent has already retrieved enough context).
+
+---
+
 ### MCP Registry — Official Discovery
 
 **Source:** [MCP Registry](https://modelcontextprotocol.io/registry), [MCP Blog](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)
