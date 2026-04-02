@@ -1,0 +1,29 @@
+name: Duplicate Issue Check
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  check-duplicate:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install openai PyGithub numpy
+
+      - name: Check for duplicate issues
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: python .github/scripts/check_duplicate.py
