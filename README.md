@@ -60,7 +60,7 @@ Your agent handles the rest. Works with Claude Code, Claude Desktop, Cursor, Win
 >
 > Do you already have a PostgreSQL database for this project?
 >
-> - **Yes** → Great, Engram will create a separate `engram` schema inside your existing database. Your app tables are untouched.
+> - **Yes** → Engram will auto-detect it and create a separate `engram` schema. Your app tables are untouched.
 > - **No** → No problem. You can get a free one in under a minute:
 >   - [Neon](https://neon.tech) — Serverless Postgres
 >   - [Supabase](https://supabase.com) — Open source Firebase alternative
@@ -73,23 +73,11 @@ Your agent handles the rest. Works with Claude Code, Claude Desktop, Cursor, Win
 
 > 🤖 **Agent**
 >
-> Add your connection string to a `.env` file in your project root:
+> ✅ Auto-detected `ENGRAM_DB_URL` from your environment.
 >
-> ```
-> ENGRAM_DB_URL='postgres://user:pass@host:5432/mydb'
-> ```
+> If I didn't find it, just add it to your `.env` or shell config and restart — I'll pick it up automatically.
 >
-> ⚠️ Don't paste your database URL in this chat — keep it in `.env` or an environment variable.
->
-> Engram creates all its tables in a separate `engram` schema, so there's zero conflict with your existing tables. Once set, restart this chat and I'll detect it automatically.
-
-*You set `ENGRAM_DB_URL` in `.env` and restart*
-
-> 🤖 **Agent**
->
-> Your team workspace is ready.
->
-> Engram tables are in the `engram` schema — fully isolated from your app.
+> Your team workspace is ready. Engram tables are in the `engram` schema — fully isolated from your app.
 >
 > Share this Invite Key with teammates:
 > ```
