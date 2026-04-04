@@ -19,7 +19,7 @@ def _render_landing() -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Engram — Shared memory for your team's agents</title>
-  <meta name="description" content="Shared memory for your team's agents. Works with any MCP-compatible IDE. You own your data.">
+  <meta name="description" content="Shared memory for your team's agents. Works with any MCP-compatible IDE. You own your data. Your agents handle everything else.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -76,24 +76,24 @@ def _render_landing() -> str:
     
     /* Hero */
     .hero {
-      padding: 100px 0 80px;
+      padding: 80px 0 60px;
       text-align: center;
     }
     
     h1 {
-      font-size: 56px;
+      font-size: 48px;
       font-weight: 700;
-      line-height: 1.1;
-      margin-bottom: 24px;
+      line-height: 1.2;
+      margin-bottom: 20px;
       color: #064e3b;
       letter-spacing: -0.03em;
     }
     
     .subtitle {
-      font-size: 20px;
+      font-size: 18px;
       color: #047857;
       max-width: 600px;
-      margin: 0 auto 48px;
+      margin: 0 auto 40px;
       line-height: 1.6;
     }
     
@@ -101,14 +101,14 @@ def _render_landing() -> str:
     .install-section {
       background: white;
       border-radius: 16px;
-      padding: 48px;
-      margin-bottom: 48px;
+      padding: 40px;
+      margin-bottom: 40px;
       box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
       border: 1px solid rgba(5, 150, 105, 0.1);
     }
     
     .section-title {
-      font-size: 32px;
+      font-size: 28px;
       font-weight: 700;
       margin-bottom: 24px;
       color: #064e3b;
@@ -118,26 +118,26 @@ def _render_landing() -> str:
     .code-block {
       background: #064e3b;
       color: #d1fae5;
-      padding: 24px;
+      padding: 20px;
       border-radius: 12px;
       font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
-      font-size: 16px;
-      margin-bottom: 20px;
+      font-size: 15px;
+      margin-bottom: 16px;
       position: relative;
       border: 2px solid #059669;
     }
     
     .code-block .copy-btn {
       position: absolute;
-      top: 16px;
-      right: 16px;
+      top: 12px;
+      right: 12px;
       background: #059669;
       color: white;
       border: none;
-      padding: 8px 16px;
+      padding: 6px 14px;
       border-radius: 6px;
       cursor: pointer;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
       transition: background 0.2s;
     }
@@ -146,61 +146,61 @@ def _render_landing() -> str:
       background: #047857;
     }
     
-    .note {
+    .step {
       font-size: 15px;
+      color: #047857;
+      margin-bottom: 12px;
+      font-weight: 500;
+    }
+    
+    .note {
+      font-size: 14px;
       color: #047857;
       line-height: 1.6;
       text-align: center;
-    }
-    
-    .note code {
-      background: #ecfdf5;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-family: 'SF Mono', monospace;
-      font-size: 14px;
-      color: #059669;
+      margin-top: 20px;
     }
     
     /* What Happens Section */
     .what-happens {
       background: white;
       border-radius: 16px;
-      padding: 48px;
-      margin-bottom: 48px;
+      padding: 40px;
+      margin-bottom: 40px;
       box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
       border: 1px solid rgba(5, 150, 105, 0.1);
     }
     
     .what-happens p {
-      font-size: 17px;
+      font-size: 16px;
       color: #1e293b;
-      line-height: 1.8;
-      margin-bottom: 20px;
+      line-height: 1.7;
+      margin-bottom: 16px;
     }
     
     .what-happens strong {
       color: #059669;
+      font-weight: 600;
     }
     
     /* Tools Section */
     .tools-section {
       background: white;
       border-radius: 16px;
-      padding: 48px;
-      margin-bottom: 48px;
+      padding: 40px;
+      margin-bottom: 40px;
       box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
       border: 1px solid rgba(5, 150, 105, 0.1);
     }
     
     .tools-grid {
       display: grid;
-      gap: 16px;
-      margin-top: 32px;
+      gap: 12px;
+      margin-top: 24px;
     }
     
     .tool-item {
-      padding: 20px;
+      padding: 16px;
       background: #f0fdf4;
       border-radius: 10px;
       border-left: 4px solid #059669;
@@ -208,21 +208,21 @@ def _render_landing() -> str:
     
     .tool-item code {
       font-family: 'SF Mono', monospace;
-      font-size: 15px;
+      font-size: 14px;
       color: #059669;
       font-weight: 600;
     }
     
     .tool-item p {
-      margin-top: 8px;
-      font-size: 15px;
+      margin-top: 6px;
+      font-size: 14px;
       color: #1e293b;
-      line-height: 1.6;
+      line-height: 1.5;
     }
     
     /* Footer */
     footer {
-      padding: 48px 0;
+      padding: 40px 0;
       text-align: center;
     }
     
@@ -230,7 +230,7 @@ def _render_landing() -> str:
       display: flex;
       gap: 24px;
       justify-content: center;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
     }
     
     .footer-links a {
@@ -245,18 +245,18 @@ def _render_landing() -> str:
     }
     
     .footer-tagline {
-      font-size: 14px;
+      font-size: 13px;
       color: #047857;
       font-style: italic;
     }
     
     /* Responsive */
     @media (max-width: 768px) {
-      h1 { font-size: 36px; }
-      .subtitle { font-size: 18px; }
+      h1 { font-size: 32px; }
+      .subtitle { font-size: 16px; }
       .hero { padding: 60px 0 40px; }
-      .install-section, .what-happens, .tools-section { padding: 32px 24px; }
-      .section-title { font-size: 24px; }
+      .install-section, .what-happens, .tools-section { padding: 28px 20px; }
+      .section-title { font-size: 22px; }
     }
   </style>
 </head>
@@ -276,7 +276,7 @@ def _render_landing() -> str:
   <!-- Hero -->
   <section class="hero">
     <div class="container">
-      <h1>Shared memory for<br>your team's agents</h1>
+      <h1>Shared memory for your team's agents</h1>
       <p class="subtitle">
         Works with any MCP-compatible IDE. You own your data. Your agents handle everything else.
       </p>
@@ -288,63 +288,43 @@ def _render_landing() -> str:
     <div class="container">
       <div class="install-section">
         <h2 class="section-title">Quick Start</h2>
-        <p class="note" style="margin-bottom: 1rem;">
-          1. Install Engram:
-        </p>
+        
+        <div class="step">1. Install Engram</div>
         <div class="code-block">
-          <button class="copy-btn" onclick="copyCode('install-cmd-1')">Copy</button>
-          <div id="install-cmd-1">pip install engram-team</div>
+          <button class="copy-btn" onclick="copyCode('install-cmd')">Copy</button>
+          <div id="install-cmd">pip install engram-team && engram install</div>
         </div>
-        <div class="code-block" style="margin-top: 0.75rem;">
-          <button class="copy-btn" onclick="copyCode('install-cmd-2')">Copy</button>
-          <div id="install-cmd-2">engram install</div>
-        </div>
-        <p class="note" style="margin-top: 1.5rem;">
-          2. Restart your MCP-compatible editor or IDE
-        </p>
-        <p class="note" style="margin-top: 0.5rem; font-size: 0.85rem; color: #5a8a5a;">
-          Supports: Claude Code, Claude Desktop, Cursor, Windsurf, VS Code (Cline/Roo/Copilot), Codex, and more
-        </p>
-        <p class="note" style="margin-top: 1rem;">
-          3. Open a new chat and ask your agent:
-        </p>
-        <div class="code-block" style="margin-top: 0.75rem;">
+        
+        <div class="step">2. Restart your editor</div>
+        
+        <div class="step">3. Ask your agent</div>
+        <div class="code-block">
           <button class="copy-btn" onclick="copyCode('setup-prompt')">Copy</button>
-          <div id="setup-prompt">Set up Engram for my team</div>
+          <div id="setup-prompt">"Set up Engram for my team"</div>
         </div>
-        <p class="note" style="margin-top: 1.5rem;">
-          Your agent will guide you through setup. You'll need:
-          <br>• A PostgreSQL database URL (get one free at neon.tech, supabase.com, or railway.app)
-          <br>• Or an Invite Key (if joining an existing workspace)
-          <br><br>Start solo or with a team — you can always share your Invite Key later to add teammates.
+        
+        <p class="note">
+          Supports Claude Code, Claude Desktop, Cursor, Windsurf, VS Code, and any MCP-compatible IDE
         </p>
       </div>
     </div>
   </section>
 
-  <!-- What happens after install -->
+  <!-- What happens -->
   <section>
     <div class="container">
       <div class="what-happens">
-        <h2 class="section-title">What happens after install</h2>
+        <h2 class="section-title">What It Does</h2>
         <p>
-          Your agent calls <code>engram_status()</code> on its first tool use and walks you through setup. 
-          No docs to read. No JSON to edit.
-        </p>
-        <p><strong>Setting up a new workspace (team founder):</strong></p>
-        <p>
-          The agent asks if you're joining or creating. You say "new". It asks for a database connection string 
-          (you can get a free PostgreSQL database at neon.tech, supabase.com, or railway.app). 
-          Once set, it generates an Invite Key — that's all teammates need.
-        </p>
-        <p><strong>Joining a workspace (teammate):</strong></p>
-        <p>
-          The agent asks for your Invite Key. You paste it. Done. The workspace ID and database connection 
-          are encrypted inside it and extracted automatically.
+          When one agent discovers something important — a hidden side effect, a failed approach, 
+          an undocumented constraint — it commits that fact. Every other agent on your team can query it instantly.
         </p>
         <p>
-          <strong>Every session after that:</strong> the agent connects silently, queries before every task, 
-          commits after every discovery. Engram is invisible infrastructure.
+          When two agents develop incompatible beliefs, Engram detects the contradiction and surfaces it for review.
+        </p>
+        <p>
+          <strong>You own your data.</strong> Engram connects to your PostgreSQL database. 
+          Your facts live in your database, not ours.
         </p>
       </div>
     </div>
@@ -354,35 +334,23 @@ def _render_landing() -> str:
   <section>
     <div class="container">
       <div class="tools-section">
-        <h2 class="section-title">Tools</h2>
+        <h2 class="section-title">MCP Tools</h2>
         <div class="tools-grid">
           <div class="tool-item">
-            <code>engram_status</code>
-            <p>Check setup state. Returns next_prompt — the agent says it to you.</p>
-          </div>
-          <div class="tool-item">
-            <code>engram_init</code>
-            <p>Create a new workspace (founder). Generates Team ID + Invite Key.</p>
-          </div>
-          <div class="tool-item">
-            <code>engram_join</code>
-            <p>Join a workspace with just an Invite Key. Extracts workspace ID + db URL automatically.</p>
+            <code>engram_commit</code>
+            <p>Persist a verified discovery</p>
           </div>
           <div class="tool-item">
             <code>engram_query</code>
-            <p>Pull what your team's agents collectively know about a topic.</p>
-          </div>
-          <div class="tool-item">
-            <code>engram_commit</code>
-            <p>Persist a verified discovery — fact, constraint, decision, failed approach.</p>
+            <p>Pull what your team's agents know</p>
           </div>
           <div class="tool-item">
             <code>engram_conflicts</code>
-            <p>Surface pairs of facts that semantically contradict each other.</p>
+            <p>Surface contradictions</p>
           </div>
           <div class="tool-item">
             <code>engram_resolve</code>
-            <p>Settle a disagreement: pick a winner, merge both sides, or dismiss.</p>
+            <p>Settle disagreements</p>
           </div>
         </div>
       </div>
@@ -397,7 +365,7 @@ def _render_landing() -> str:
         <a href="https://github.com/Agentscreator/Engram" target="_blank">GitHub</a>
         <a href="https://github.com/Agentscreator/Engram/blob/main/LICENSE" target="_blank">Apache 2.0</a>
       </div>
-      <p class="footer-tagline">An engram is the physical trace a memory leaves in the brain — the actual unit of stored knowledge.</p>
+      <p class="footer-tagline">An engram is the physical trace a memory leaves in the brain</p>
     </div>
   </footer>
 
@@ -406,7 +374,7 @@ def _render_landing() -> str:
       const el = document.getElementById(id);
       const text = el.textContent.trim();
       navigator.clipboard.writeText(text).then(() => {
-        const btn = document.querySelector('.copy-btn');
+        const btn = event.target;
         const originalText = btn.textContent;
         btn.textContent = 'Copied!';
         setTimeout(() => btn.textContent = originalText, 2000);
