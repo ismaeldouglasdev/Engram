@@ -22,39 +22,124 @@ if (-not $InviteKey) {
     }
 }
 
-# ── JSON patcher (Python) ──────────────────────────────────────────
-function Patch-McpJson {
+# ── Per-IDE JSON patchers ──────────────────────────────────────────
+
+# Generic: mcpServers.engram = {url, headers?}  (Cursor, Kiro)
+function Patch-McpServersUrl {
     param([string]$ConfigFile)
     & $py -c @"
 import json, sys, os
-
 config_file = r'$ConfigFile'
 mcp_url     = '$McpUrl'
 invite_key  = '$InviteKey'
-
 if os.path.exists(config_file):
     try:
-        with open(config_file) as f:
-            config = json.load(f)
-    except Exception:
-        config = {}
+        with open(config_file) as f: config = json.load(f)
+    except Exception: config = {}
 else:
     os.makedirs(os.path.dirname(config_file), exist_ok=True)
     config = {}
-
-if 'mcpServers' not in config:
-    config['mcpServers'] = {}
-
+config.setdefault('mcpServers', {})
 entry = {'url': mcp_url}
-if invite_key:
-    entry['headers'] = {'Authorization': f'Bearer {invite_key}'}
-
+if invite_key: entry['headers'] = {'Authorization': f'Bearer {invite_key}'}
 config['mcpServers']['engram'] = entry
+with open(config_file, 'w') as f: json.dump(config, f, indent=2)
+print(f'  + {config_file}')
+"@
+}
 
-with open(config_file, 'w') as f:
-    json.dump(config, f, indent=2)
+# Windsurf: mcpServers.engram = {serverUrl, headers?}
+function Patch-Windsurf {
+    param([string]$ConfigFile)
+    & $py -c @"
+import json, sys, os
+config_file = r'$ConfigFile'
+mcp_url     = '$McpUrl'
+invite_key  = '$InviteKey'
+if os.path.exists(config_file):
+    try:
+        with open(config_file) as f: config = json.load(f)
+    except Exception: config = {}
+else:
+    os.makedirs(os.path.dirname(config_file), exist_ok=True)
+    config = {}
+config.setdefault('mcpServers', {})
+entry = {'serverUrl': mcp_url}
+if invite_key: entry['headers'] = {'Authorization': f'Bearer {invite_key}'}
+config['mcpServers']['engram'] = entry
+with open(config_file, 'w') as f: json.dump(config, f, indent=2)
+print(f'  + {config_file}')
+"@
+}
 
-print(f'  Patched: {config_file}')
+# VS Code: servers.engram = {type: "http", url, headers?}
+function Patch-VSCode {
+    param([string]$ConfigFile)
+    & $py -c @"
+import json, sys, os
+config_file = r'$ConfigFile'
+mcp_url     = '$McpUrl'
+invite_key  = '$InviteKey'
+if os.path.exists(config_file):
+    try:
+        with open(config_file) as f: config = json.load(f)
+    except Exception: config = {}
+else:
+    os.makedirs(os.path.dirname(config_file), exist_ok=True)
+    config = {}
+config.setdefault('servers', {})
+entry = {'type': 'http', 'url': mcp_url}
+if invite_key: entry['headers'] = {'Authorization': f'Bearer {invite_key}'}
+config['servers']['engram'] = entry
+with open(config_file, 'w') as f: json.dump(config, f, indent=2)
+print(f'  + {config_file}')
+"@
+}
+
+# Claude Code: mcpServers.engram = {type: "http", url, headers?} in ~/.claude.json
+function Patch-ClaudeCode {
+    param([string]$ConfigFile)
+    & $py -c @"
+import json, sys, os
+config_file = r'$ConfigFile'
+mcp_url     = '$McpUrl'
+invite_key  = '$InviteKey'
+if os.path.exists(config_file):
+    try:
+        with open(config_file) as f: config = json.load(f)
+    except Exception: config = {}
+else:
+    config = {}
+config.setdefault('mcpServers', {})
+entry = {'type': 'http', 'url': mcp_url}
+if invite_key: entry['headers'] = {'Authorization': f'Bearer {invite_key}'}
+config['mcpServers']['engram'] = entry
+with open(config_file, 'w') as f: json.dump(config, f, indent=2)
+print(f'  + {config_file}')
+"@
+}
+
+# Claude Desktop: must use npx mcp-remote bridge for remote servers
+function Patch-ClaudeDesktop {
+    param([string]$ConfigFile)
+    & $py -c @"
+import json, sys, os
+config_file = r'$ConfigFile'
+mcp_url     = '$McpUrl'
+invite_key  = '$InviteKey'
+if os.path.exists(config_file):
+    try:
+        with open(config_file) as f: config = json.load(f)
+    except Exception: config = {}
+else:
+    os.makedirs(os.path.dirname(config_file), exist_ok=True)
+    config = {}
+config.setdefault('mcpServers', {})
+args = ['-y', 'mcp-remote@latest', mcp_url]
+if invite_key: args.extend(['--header', f'Authorization: Bearer {invite_key}'])
+config['mcpServers']['engram'] = {'command': 'npx', 'args': args}
+with open(config_file, 'w') as f: json.dump(config, f, indent=2)
+print(f'  + {config_file}')
 "@
 }
 
@@ -62,62 +147,61 @@ print(f'  Patched: {config_file}')
 Write-Host "`nDetecting MCP clients..."
 $patched = 0
 
-# Claude Desktop (Windows)
+# Claude Desktop (Windows) — uses npx mcp-remote bridge
 $claudeDesktop = "$env:APPDATA\Claude\claude_desktop_config.json"
 if (Test-Path "$env:APPDATA\Claude") {
-    Patch-McpJson $claudeDesktop
+    Patch-ClaudeDesktop $claudeDesktop
     $patched++
 }
 
-# Claude Code (~/.claude/settings.json)
-$claudeCode = "$env:USERPROFILE\.claude\settings.json"
-if (Test-Path "$env:USERPROFILE\.claude") {
-    Patch-McpJson $claudeCode
+# Claude Code — config lives in ~/.claude.json
+$claudeCode = "$env:USERPROFILE\.claude.json"
+if ((Test-Path $claudeCode) -or (Test-Path "$env:USERPROFILE\.claude")) {
+    Patch-ClaudeCode $claudeCode
     $patched++
 }
 
 # Cursor (~/.cursor/mcp.json)
 $cursor = "$env:USERPROFILE\.cursor\mcp.json"
 if (Test-Path "$env:USERPROFILE\.cursor") {
-    Patch-McpJson $cursor
+    Patch-McpServersUrl $cursor
     $patched++
 }
 
-# VS Code (Windows)
-$vscode = "$env:APPDATA\Code\User\settings.json"
-if (Test-Path $vscode) {
-    Patch-McpJson $vscode
+# VS Code (Windows) — uses {servers: {type: "http", url}} in mcp.json
+$vscode = "$env:APPDATA\Code\User\mcp.json"
+if (Test-Path "$env:APPDATA\Code") {
+    Patch-VSCode $vscode
     $patched++
 }
 
-# Windsurf
+# Windsurf — uses {serverUrl}
 $windsurf = "$env:USERPROFILE\.codeium\windsurf\mcp_config.json"
 if (Test-Path "$env:USERPROFILE\.codeium\windsurf") {
-    Patch-McpJson $windsurf
+    Patch-Windsurf $windsurf
     $patched++
 }
 
 # Kiro (~/.kiro/settings/mcp.json)
 $kiro = "$env:USERPROFILE\.kiro\settings\mcp.json"
 if (Test-Path "$env:USERPROFILE\.kiro") {
-    Patch-McpJson $kiro
+    Patch-McpServersUrl $kiro
     $patched++
 }
 
 # ── Result ─────────────────────────────────────────────────────────
 Write-Host ''
 if ($patched -eq 0) {
-    Write-Host 'No MCP clients detected. Manually add to your config:'
+    Write-Host 'No MCP clients detected. Manually add to your IDE''s MCP config:'
     Write-Host ''
+    Write-Host "  Remote MCP URL: $McpUrl"
     if ($InviteKey) {
-        Write-Host "  `"mcpServers`": { `"engram`": { `"url`": `"$McpUrl`", `"headers`": { `"Authorization`": `"Bearer $InviteKey`" } } }"
-    } else {
-        Write-Host "  `"mcpServers`": { `"engram`": { `"url`": `"$McpUrl`" } }"
+        Write-Host "  Header: Authorization: Bearer $InviteKey"
     }
     Write-Host ''
     Write-Host 'Then restart your IDE.'
 } else {
-    Write-Host 'Done. Restart your IDE, then ask your agent:'
+    Write-Host 'Done! Restart your IDE, then ask your agent:'
     if (-not $InviteKey) {
         Write-Host ''
         Write-Host '  "Set up Engram for my team"    - to create a new workspace'

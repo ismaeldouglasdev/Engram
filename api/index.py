@@ -555,7 +555,7 @@ def _render_landing() -> str:
       </div>
     </div>
     <p class="ide-note">
-      <span>Claude Code · Claude Desktop · Cursor · Windsurf · Kiro · VS Code</span><br>
+      <span>Claude Code · Claude Desktop · Cursor · Windsurf · Kiro · VS Code · Zed</span><br>
       and any MCP-compatible IDE
     </p>
   </div>
