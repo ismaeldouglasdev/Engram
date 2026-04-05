@@ -46,7 +46,7 @@ Restart your editor, then ask your agent:
 "Set up Engram for my team"
 ```
 
-Your agent handles the rest — no database setup, no configuration files, no environment variables. Works with Claude Code, Claude Desktop, Cursor, Windsurf, VS Code, and any MCP-compatible IDE.
+Your agent handles the rest.
 
 ---
 
