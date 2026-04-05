@@ -49,6 +49,11 @@ function Patch-ClaudeDesktop {  # npx mcp-remote bridge
     & $py -c "import json,os;f=r'$f';u='$McpUrl';k='$InviteKey';c=json.load(open(f)) if os.path.exists(f) else {};os.makedirs(os.path.dirname(f),exist_ok=True);c.setdefault('mcpServers',{});a=['-y','mcp-remote@latest',u];k and a.extend(['--header','Authorization: Bearer '+k]);c['mcpServers']['engram']={'command':'npx','args':a};json.dump(c,open(f,'w'),indent=2);print('  + '+f)"
 }
 
+function Patch-OpenCode {  # {mcp: {engram: {type: "remote", url}}}
+    param([string]$f)
+    & $py -c "import json,os;f=r'$f';u='$McpUrl';k='$InviteKey';c=json.load(open(f)) if os.path.exists(f) else {};os.makedirs(os.path.dirname(f),exist_ok=True);c.setdefault('mcp',{});e={'type':'remote','url':u,'enabled':True};k and e.update({'headers':{'Authorization':'Bearer '+k}});c['mcp']['engram']=e;json.dump(c,open(f,'w'),indent=2);print('  + '+f)"
+}
+
 # ── Detect and patch MCP clients ──────────────────────────────────
 Write-Host "`nDetecting MCP clients..."
 $patched = 0
@@ -98,6 +103,32 @@ if (Test-Path "$env:USERPROFILE\.aws\amazonq") {
 # Trae (ByteDance)
 if (Test-Path "$env:APPDATA\Trae") {
     Patch-McpServersUrl "$env:APPDATA\Trae\User\mcp.json"
+    $patched++
+}
+
+# JetBrains / Junie
+if (Test-Path "$env:USERPROFILE\.junie") {
+    Patch-McpServersUrl "$env:USERPROFILE\.junie\mcp\mcp.json"
+    $patched++
+}
+
+# Cline (VS Code extension)
+$clineMcp = "$env:USERPROFILE\Documents\Cline\MCP\cline_mcp_settings.json"
+if (Test-Path "$env:USERPROFILE\Documents\Cline") {
+    Patch-McpServersUrl $clineMcp
+    $patched++
+}
+
+# Roo Code (VS Code extension)
+$rooStorage = "$env:APPDATA\Code\User\globalStorage\rooveterinaryinc.roo-cline"
+if (Test-Path $rooStorage) {
+    Patch-McpServersUrl "$rooStorage\settings\cline_mcp_settings.json"
+    $patched++
+}
+
+# OpenCode
+if (Test-Path "$env:USERPROFILE\.config\opencode") {
+    Patch-OpenCode "$env:USERPROFILE\.config\opencode\config.json"
     $patched++
 }
 

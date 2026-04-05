@@ -124,6 +124,22 @@ print(f"  ✓ {f}")
 PYEOF
 }
 
+# OpenCode: mcp.engram = {type: "remote", url, headers?}
+patch_opencode() {
+  python3 - "$1" "$MCP_URL" "$INVITE_KEY" << 'PYEOF'
+import json, sys, os
+f, u, k = sys.argv[1], sys.argv[2], sys.argv[3]
+c = json.load(open(f)) if os.path.exists(f) else {}
+os.makedirs(os.path.dirname(f), exist_ok=True)
+c.setdefault("mcp", {})
+e = {"type": "remote", "url": u, "enabled": True}
+if k: e["headers"] = {"Authorization": f"Bearer {k}"}
+c["mcp"]["engram"] = e
+json.dump(c, open(f, "w"), indent=2)
+print(f"  ✓ {f}")
+PYEOF
+}
+
 # Zed: context_servers.engram = {url, headers?} in settings.json
 patch_zed() {
   python3 - "$1" "$MCP_URL" "$INVITE_KEY" << 'PYEOF'
@@ -218,6 +234,41 @@ if [ "$OS" = "Darwin" ] && [ -d "$HOME/Library/Application Support/Trae" ]; then
 fi
 if [ "$OS" = "Linux" ] && [ -d "$HOME/.config/Trae" ]; then
   patch_mcpservers_url "$HOME/.config/Trae/User/mcp.json"
+  PATCHED=$((PATCHED + 1))
+fi
+
+# ── JetBrains / Junie ───────────────────────────────────────────
+# User-scope MCP config: ~/.junie/mcp/mcp.json
+if [ -d "$HOME/.junie" ]; then
+  patch_mcpservers_url "$HOME/.junie/mcp/mcp.json"
+  PATCHED=$((PATCHED + 1))
+fi
+
+# ── Cline (VS Code extension) ───────────────────────────────────
+# Stores MCP settings in ~/Documents/Cline/MCP/cline_mcp_settings.json
+# and also in VS Code globalStorage
+CLINE_DIR="$HOME/Documents/Cline/MCP"
+if [ -d "$CLINE_DIR" ] || [ -d "$HOME/Documents/Cline" ]; then
+  patch_mcpservers_url "$CLINE_DIR/cline_mcp_settings.json"
+  PATCHED=$((PATCHED + 1))
+fi
+
+# ── Roo Code (VS Code extension, Cline fork) ────────────────────
+# globalStorage path for Roo Code
+if [ "$OS" = "Darwin" ]; then
+  ROO_STORAGE="$HOME/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline"
+else
+  ROO_STORAGE="$HOME/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline"
+fi
+if [ -d "$ROO_STORAGE" ]; then
+  patch_mcpservers_url "$ROO_STORAGE/settings/cline_mcp_settings.json"
+  PATCHED=$((PATCHED + 1))
+fi
+
+# ── OpenCode ─────────────────────────────────────────────────────
+# Uses {mcp: {name: {type: "remote", url}}} in opencode.json or ~/.config/opencode/config.json
+if [ -d "$HOME/.config/opencode" ] || [ -f "$HOME/.config/opencode/config.json" ]; then
+  patch_opencode "$HOME/.config/opencode/config.json"
   PATCHED=$((PATCHED + 1))
 fi
 

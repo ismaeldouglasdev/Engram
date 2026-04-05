@@ -85,6 +85,30 @@ if exist "%APPDATA%\Trae" (
     set /a PATCHED+=1
 )
 
+REM JetBrains / Junie
+if exist "%USERPROFILE%\.junie" (
+    call :patch_mcpservers_url "%USERPROFILE%\.junie\mcp\mcp.json"
+    set /a PATCHED+=1
+)
+
+REM Cline (VS Code extension)
+if exist "%USERPROFILE%\Documents\Cline" (
+    call :patch_mcpservers_url "%USERPROFILE%\Documents\Cline\MCP\cline_mcp_settings.json"
+    set /a PATCHED+=1
+)
+
+REM Roo Code (VS Code extension)
+if exist "%APPDATA%\Code\User\globalStorage\rooveterinaryinc.roo-cline" (
+    call :patch_mcpservers_url "%APPDATA%\Code\User\globalStorage\rooveterinaryinc.roo-cline\settings\cline_mcp_settings.json"
+    set /a PATCHED+=1
+)
+
+REM OpenCode
+if exist "%USERPROFILE%\.config\opencode" (
+    call :patch_opencode "%USERPROFILE%\.config\opencode\config.json"
+    set /a PATCHED+=1
+)
+
 REM ── Result ───────────────────────────────────────────────────────
 echo.
 if %PATCHED% equ 0 (
@@ -130,4 +154,9 @@ goto :eof
 :patch_claude_desktop
 set "CF=%~1"
 %PY% -c "import json,os;f=r'%CF%';u='%MCP_URL%';k='%INVITE_KEY%';c=json.load(open(f)) if os.path.exists(f) else {};os.makedirs(os.path.dirname(f),exist_ok=True);c.setdefault('mcpServers',{});a=['-y','mcp-remote@latest',u];k and a.extend(['--header','Authorization: Bearer '+k]);c['mcpServers']['engram']={'command':'npx','args':a};json.dump(c,open(f,'w'),indent=2);print('  + '+f)"
+goto :eof
+
+:patch_opencode
+set "CF=%~1"
+%PY% -c "import json,os;f=r'%CF%';u='%MCP_URL%';k='%INVITE_KEY%';c=json.load(open(f)) if os.path.exists(f) else {};os.makedirs(os.path.dirname(f),exist_ok=True);c.setdefault('mcp',{});e={'type':'remote','url':u,'enabled':True};k and e.update({'headers':{'Authorization':'Bearer '+k}});c['mcp']['engram']=e;json.dump(c,open(f,'w'),indent=2);print('  + '+f)"
 goto :eof
