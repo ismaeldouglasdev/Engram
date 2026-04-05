@@ -34,6 +34,7 @@
     { "source": "/auth/(.*)", "destination": "/api/auth" },
     { "source": "/billing", "destination": "/api/billing" },
     { "source": "/billing/(.*)", "destination": "/api/billing" },
+    { "source": "/stripe/webhook", "destination": "/api/billing" },
     { "source": "/workspace", "destination": "/api/workspace" },
     { "source": "/workspace/(.*)", "destination": "/api/workspace" },
     { "source": "/install", "destination": "/api/install" },

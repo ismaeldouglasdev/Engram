@@ -317,5 +317,6 @@ app = Starlette(routes=[
     Route("/billing/checkout", handle_checkout, methods=["POST"]),
     Route("/billing/portal",   handle_portal,   methods=["GET"]),
     Route("/billing/webhook",  handle_webhook,  methods=["POST"]),
+    Route("/stripe/webhook",   handle_webhook,  methods=["POST"]),  # canonical Stripe URL
     Route("/billing/{path:path}", handle_options, methods=["OPTIONS"]),
 ])
