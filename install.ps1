@@ -1,9 +1,9 @@
 # Engram installer for Windows PowerShell
-# Usage: irm https://engram.app/install.ps1 | iex
-#   or:  & { $env:ENGRAM_JOIN='ek_live_...'; irm https://engram.app/install.ps1 | iex }
+# Usage: irm https://engram-us.com/install.ps1 | iex
+#   or:  & { $env:ENGRAM_JOIN='ek_live_...'; irm https://engram-us.com/install.ps1 | iex }
 
 $ErrorActionPreference = 'Stop'
-$McpUrl = 'https://mcp.engram.app/mcp'
+$McpUrl = 'https://mcp.engram-us.com/mcp'
 $InviteKey = $env:ENGRAM_JOIN
 
 # ── Require Python 3 ───────────────────────────────────────────────

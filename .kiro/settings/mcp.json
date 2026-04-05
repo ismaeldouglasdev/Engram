@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "engram": {
-      "command": "uvx",
-      "args": ["--from", "engram-team@latest", "engram", "serve"],
+      "command": "uv",
+      "args": ["run", "--project", "/Users/josh/Downloads/Engram", "engram", "serve"],
       "disabled": false,
       "autoApprove": []
     }

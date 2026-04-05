@@ -365,7 +365,7 @@ async def _tool_init(pool: Any, anonymous_mode: bool = False, anon_agents: bool 
             f'  "headers": {{"Authorization": "Bearer {invite_key}"}}\n\n'
             f"In Claude Code I can edit the config for you — just ask.\n\n"
             f"To invite teammates, share the invite key above. They run:\n"
-            f"  curl -fsSL https://engram.app/install | sh\n"
+            f"  curl -fsSL https://engram-us.com/install | sh\n"
             f"and paste the invite key when prompted.\n\n"
             f"To see and manage your team's memory — facts, conflicts, agents, and lineage — "
             f"visit the Engram dashboard:\n"

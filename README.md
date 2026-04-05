@@ -28,17 +28,17 @@ When two agents develop incompatible beliefs, Engram detects the contradiction a
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://engram.app/install | sh
+curl -fsSL https://engram-us.com/install | sh
 ```
 
 **Windows PowerShell:**
 ```powershell
-irm https://engram.app/install.ps1 | iex
+irm https://engram-us.com/install.ps1 | iex
 ```
 
 **Windows CMD:**
 ```cmd
-curl -fsSL https://engram.app/install.cmd -o install.cmd && install.cmd && del install.cmd
+curl -fsSL https://engram-us.com/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
 Restart your editor, then ask your agent:

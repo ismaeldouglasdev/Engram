@@ -29,3 +29,6 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+# Kiro local settings (machine-specific MCP config)
+.kiro/settings/mcp.json

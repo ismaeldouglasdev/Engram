@@ -1,10 +1,10 @@
 @echo off
 REM Engram installer for Windows CMD
-REM Usage: curl -fsSL https://engram.app/install.cmd -o install.cmd && install.cmd && del install.cmd
+REM Usage: curl -fsSL https://engram-us.com/install.cmd -o install.cmd && install.cmd && del install.cmd
 
 setlocal enabledelayedexpansion
 
-set "MCP_URL=https://mcp.engram.app/mcp"
+set "MCP_URL=https://mcp.engram-us.com/mcp"
 set "INVITE_KEY="
 
 REM ── Require Python 3 ─────────────────────────────────────────────
