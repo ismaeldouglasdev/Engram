@@ -13,7 +13,7 @@ def _render_dashboard() -> str:
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Dashboard — Engram</title>
   <meta name="description" content="View and manage your team's shared memory — facts, conflicts, agents, and lineage.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -401,13 +401,89 @@ def _render_dashboard() -> str:
     .pricing-note { font-size: 12px; color: var(--tm); margin-top: 12px; line-height: 1.6; }
 
     @media (max-width: 768px) {
-      .ws-grid { grid-template-columns: 1fr; }
-      .stats-row { flex-direction: column; }
-      .conflict-facts { grid-template-columns: 1fr; }
-      .fact-row { grid-template-columns: 1fr; gap: 4px; }
+      .container { padding: 0 16px; }
+
+      /* Header */
+      header { padding: 12px 0; }
+      .user-email { display: none; }
+      .btn-sm { padding: 7px 13px; font-size: 12px; }
+
+      /* Workspace list */
+      .ws-grid { grid-template-columns: 1fr; gap: 12px; }
+      .screen-title { font-size: 18px; }
+
+      /* Workspace detail */
+      .detail-header { flex-wrap: wrap; gap: 10px; padding-top: 16px; }
+      .detail-ws-id { font-size: 15px; }
+      .back-btn { font-size: 12px; }
+
+      /* Stats — 2-column grid */
+      .stats-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        padding: 16px 0;
+      }
+      .stat-card { min-width: unset; padding: 14px 16px; }
+      .stat-num { font-size: 26px; }
+
+      /* Tabs — horizontally scrollable, no wrapping */
+      .tabs {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        flex-wrap: nowrap;
+      }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab-btn {
+        padding: 12px 16px;
+        font-size: 13px;
+        flex-shrink: 0;
+        min-height: 44px;
+        white-space: nowrap;
+      }
+
+      /* Graph */
+      .graph-controls { padding: 12px 0 0; }
+      .graph-filter { font-size: 13px; padding: 10px 14px; }
+      #cy { height: 300px; }
+
+      /* Facts */
+      .facts-toolbar { flex-wrap: wrap; gap: 8px; }
+      .facts-search { flex: 1 1 100%; font-size: 13px; }
+      .filter-btn { font-size: 12px; padding: 6px 12px; }
+      .fact-row { grid-template-columns: 1fr; gap: 4px; padding: 12px 14px; }
       .fact-row-header { display: none; }
-      #cy { height: 360px; }
-      .modal { margin: 16px; }
+      .fact-content { font-size: 13px; }
+      .fact-scope, .fact-type, .fact-date { font-size: 11px; }
+
+      /* Conflicts */
+      .conflict-facts { grid-template-columns: 1fr; }
+      .conflict-card { padding: 16px; }
+
+      /* Agents */
+      .agents-grid { grid-template-columns: 1fr; }
+
+      /* Modal — bottom sheet on mobile */
+      .modal-overlay { align-items: flex-end; }
+      .modal {
+        border-radius: 20px 20px 0 0;
+        padding: 28px 24px calc(28px + env(safe-area-inset-bottom));
+        max-width: 100%;
+        width: 100%;
+      }
+
+      /* Paused banner */
+      .paused-banner { flex-direction: column; gap: 12px; }
+
+      /* Conflicts */
+      .conflict-facts { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 480px) {
+      .stat-num { font-size: 22px; }
+      .stat-card { padding: 12px 14px; }
+      .auth-form-panel { padding: 32px 20px; }
     }
   </style>
 </head>

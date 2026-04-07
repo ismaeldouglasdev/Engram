@@ -451,13 +451,38 @@ def _render_landing() -> str:
     }
     .copy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+    /* ── Hamburger ───────────────────────────────────────────── */
+    .hamburger {
+      display: none; flex-direction: column; gap: 5px;
+      cursor: pointer; padding: 8px; border: none; background: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .hamburger span {
+      width: 22px; height: 2px; background: var(--text-secondary);
+      border-radius: 2px; transition: all 0.25s ease; display: block;
+    }
+    .hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+    .hamburger.open span:nth-child(2) { opacity: 0; transform: scaleX(0); }
+    .hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+    .nav-mobile {
+      display: none; border-top: 1px solid var(--border-subtle); padding: 8px 0;
+    }
+    .nav-mobile.open { display: block; }
+    .nav-mobile a {
+      display: block; padding: 14px 0; color: var(--text-secondary);
+      text-decoration: none; font-size: 15px; font-weight: 500;
+      border-bottom: 1px solid rgba(52,211,153,0.05);
+      transition: color 0.2s;
+    }
+    .nav-mobile a:last-child { border-bottom: none; }
+    .nav-mobile a:hover { color: var(--emerald-400); }
+
     /* ── Responsive ──────────────────────────────────────────── */
     @media (max-width: 768px) {
-      h1 { font-size: 38px; }
-      .subtitle { font-size: 16px; }
-      .hero { padding: 80px 0 60px; }
+      h1 { font-size: 42px; }
       .card { padding: 32px 24px; }
-      .section-title { font-size: 24px; }
+      .section-title { font-size: 26px; }
       .feature-grid { grid-template-columns: 1fr; }
       .search-row { flex-direction: column; }
       #cy { height: 380px; }
@@ -466,6 +491,63 @@ def _render_landing() -> str:
       .graph-hero { padding: 48px 0; }
       .graph-hero-title { font-size: 28px; }
       .graph-card { padding: 24px; }
+      .privacy-item { padding: 20px; gap: 14px; }
+    }
+
+    @media (max-width: 640px) {
+      .nav-links { display: none; }
+      .hamburger { display: flex; }
+
+      .container { padding: 0 20px; }
+
+      h1 { font-size: 34px; letter-spacing: -0.03em; }
+      .hero { padding: 64px 0 48px; }
+      .hero-badge { font-size: 12px; padding: 5px 13px 5px 9px; margin-bottom: 24px; }
+      .subtitle { font-size: 16px; margin-bottom: 36px; }
+      .hero-cta {
+        width: 100%; justify-content: center;
+        padding: 15px 24px; font-size: 15px;
+        border-radius: 14px;
+      }
+
+      .card { padding: 24px 18px; border-radius: 16px; margin-bottom: 24px; }
+      .section-title { font-size: 22px; }
+      .section-desc { font-size: 15px; }
+
+      .code-block { font-size: 12px; padding: 14px 52px 14px 14px; }
+      .copy-btn { padding: 4px 9px; font-size: 10px; top: 8px; right: 8px; }
+
+      .tab { padding: 8px 13px; font-size: 12px; }
+
+      .step-num { width: 28px; height: 28px; font-size: 13px; }
+      .step-title { font-size: 14px; }
+      .ide-note { font-size: 12px; }
+
+      .feature-grid { gap: 12px; }
+      .feature-item { padding: 20px; }
+      .feature-item h3 { font-size: 14px; }
+
+      .privacy-item { flex-direction: column; gap: 10px; padding: 18px; }
+      .privacy-icon { width: 32px; height: 32px; font-size: 14px; }
+
+      .graph-hero { padding: 48px 0; margin: 24px 0; }
+      .graph-hero-title { font-size: 26px; }
+      .graph-hero-desc { font-size: 15px; }
+      .graph-card { padding: 20px 16px; }
+      #cy { height: 300px; }
+      .graph-stats { gap: 20px; }
+      .stat-num { font-size: 26px; }
+      .graph-legend { gap: 16px; }
+
+      footer { padding: 40px 0 28px; }
+      .footer-links { flex-wrap: wrap; gap: 16px 24px; }
+      .footer-logo { width: 100%; text-align: center; }
+    }
+
+    @media (max-width: 380px) {
+      h1 { font-size: 28px; }
+      .hero { padding: 52px 0 36px; }
+      .card { padding: 20px 16px; }
     }
   </style>
 </head>
@@ -486,7 +568,16 @@ def _render_landing() -> str:
         <a href="#privacy">Privacy</a>
         <a href="https://github.com/Agentscreator/Engram" target="_blank">GitHub</a>
       </nav>
+      <button class="hamburger" id="hamburger" onclick="toggleMenu()" aria-label="Open menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
     </div>
+    <nav class="nav-mobile" id="nav-mobile" aria-hidden="true">
+      <a href="#install" onclick="toggleMenu()">Install</a>
+      <a href="/dashboard" onclick="toggleMenu()">Dashboard</a>
+      <a href="#privacy" onclick="toggleMenu()">Privacy</a>
+      <a href="https://github.com/Agentscreator/Engram" target="_blank">GitHub ↗</a>
+    </nav>
   </div>
 </header>
 
@@ -745,6 +836,27 @@ function copyCode(id) {
     }
   });
 }
+
+// ── Hamburger menu ─────────────────────────────────────────────────
+function toggleMenu() {
+  const btn = document.getElementById('hamburger');
+  const nav = document.getElementById('nav-mobile');
+  const open = btn.classList.toggle('open');
+  nav.classList.toggle('open', open);
+  btn.setAttribute('aria-expanded', open);
+  nav.setAttribute('aria-hidden', !open);
+}
+// Close on outside click
+document.addEventListener('click', e => {
+  const btn = document.getElementById('hamburger');
+  const nav = document.getElementById('nav-mobile');
+  if (nav.classList.contains('open') && !btn.contains(e.target) && !nav.contains(e.target)) {
+    btn.classList.remove('open');
+    nav.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+    nav.setAttribute('aria-hidden', 'true');
+  }
+});
 
 </script>
 </body>
