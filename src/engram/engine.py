@@ -30,8 +30,8 @@ class EngramEngine:
 
     def __init__(self, storage: BaseStorage) -> None:
         self.storage = storage
-        self._detection_queue: asyncio.Queue[str] = asyncio.Queue()
-        self._suggestion_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._detection_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=500)
+        self._suggestion_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=500)
         self._detection_task: asyncio.Task[None] | None = None
         self._ttl_task: asyncio.Task[None] | None = None
         self._decay_task: asyncio.Task[None] | None = None
@@ -294,7 +294,15 @@ class EngramEngine:
 
         # Step 13: Queue for async detection (skip for ephemeral facts)
         if durability == "durable":
-            await self._detection_queue.put(fact_id)
+            try:
+                await asyncio.wait_for(
+                    self._detection_queue.put(fact_id), timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Detection queue full, skipping conflict check for %s",
+                    fact_id[:12],
+                )
 
         # Step 14: Check for corroboration (Phase 2: multi-agent consensus)
         # Find semantically similar facts from different agents in the same scope
@@ -543,7 +551,15 @@ class EngramEngine:
             raise ValueError(f"Failed to promote fact {fact_id}.")
 
         # Now that it's durable, queue it for conflict detection
-        await self._detection_queue.put(fact_id)
+        try:
+            await asyncio.wait_for(
+                self._detection_queue.put(fact_id), timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Detection queue full, skipping conflict check for %s",
+                fact_id[:12],
+            )
 
         logger.info("Promoted ephemeral fact %s to durable", fact_id[:12])
         return {
@@ -747,7 +763,10 @@ class EngramEngine:
                                 "severity": "high",
                                 "status": "open",
                             })
-                            await self._suggestion_queue.put(conflict_id)
+                            try:
+                                self._suggestion_queue.put_nowait(conflict_id)
+                            except asyncio.QueueFull:
+                                logger.warning("Suggestion queue full, skipping suggestion for conflict %s", conflict_id[:12])
                             tier0_flagged.add(c["id"])
 
         # ── Tier 2b: Cross-scope entity detection ────────────────────
@@ -781,7 +800,10 @@ class EngramEngine:
                                 "severity": "high",
                                 "status": "open",
                             })
-                            await self._suggestion_queue.put(conflict_id)
+                            try:
+                                self._suggestion_queue.put_nowait(conflict_id)
+                            except asyncio.QueueFull:
+                                logger.warning("Suggestion queue full, skipping suggestion for conflict %s", conflict_id[:12])
                             tier2b_flagged.add(c["id"])
 
         # ── Tier 2: Numeric and temporal rules (parallel with Tier 1) ────
@@ -820,7 +842,10 @@ class EngramEngine:
                                     "severity": "high",
                                     "status": "open",
                                 })
-                                await self._suggestion_queue.put(conflict_id)
+                                try:
+                                    self._suggestion_queue.put_nowait(conflict_id)
+                                except asyncio.QueueFull:
+                                    logger.warning("Suggestion queue full, skipping suggestion for conflict %s", conflict_id[:12])
                                 tier2_flagged.add(candidate["id"])
 
         # ── Tier 1: NLI cross-encoder ────────────────────────────────
@@ -912,7 +937,10 @@ class EngramEngine:
                             "severity": severity,
                             "status": "open",
                         })
-                        await self._suggestion_queue.put(conflict_id)
+                        try:
+                            self._suggestion_queue.put_nowait(conflict_id)
+                        except asyncio.QueueFull:
+                            logger.warning("Suggestion queue full, skipping suggestion for conflict %s", conflict_id[:12])
 
             except Exception:
                 logger.exception("NLI inference failed for pair %s / %s", fact_id, candidate["id"])
