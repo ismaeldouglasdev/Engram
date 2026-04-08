@@ -85,10 +85,14 @@ curl -fsSL https://engram-us.com/install | sh -s -- --join ek_live_YOUR_KEY
 After installation:
 
 1. Restart or reload your IDE if it was already open.
-2. Ask your agent to call `engram_status`.
-3. If you are joining an existing workspace, use your invite key during install or ask your agent to join with it.
+2. Confirm that Engram was added to the IDE's MCP config file:
+   - Cursor: `~/.cursor/mcp.json`
+   - VS Code: `<User>/mcp.json`
+   - Claude Code: `~/.claude.json`
+3. Open your IDE's MCP or tools UI, if available, and confirm the Engram server appears and is enabled.
+4. If you are joining an existing workspace, use your invite key during install.
 
-Opening the MCP endpoint directly in a browser is not a reliable verification step. Verify the integration through your IDE’s agent/tool interface.
+Opening the MCP endpoint directly in a browser is not a reliable verification step. Verify the integration through your IDE's MCP config and tool or server UI instead.
 
 ### Expected install output
 
@@ -113,12 +117,13 @@ If you install with `--join`, the final line will instead look like:
 
 ### Cursor
 **Common failure:** Cursor was not restarted after installation.  
-**Fix:** Restart Cursor, then ask your agent to call `engram_status` again.
+**Fix:** Restart Cursor, then confirm Engram appears in `~/.cursor/mcp.json` and in Cursor’s MCP or tools UI.
 
 ### VS Code
 **Common failure:** VS Code uses `servers.engram`, not `mcpServers.engram`.  
-**Fix:** Confirm Engram was written under `servers`, restart VS Code, then ask your agent to call `engram_status` again.
+**Fix:** Confirm Engram was written under `servers` in `<User>/mcp.json`, then restart VS Code.
 
 ### Claude Code
-**Common failure:** Claude Code is confused with Claude Desktop.  
-**Fix:** Check `~/.claude.json`, restart Claude Code, then ask your agent to call `engram_status` again.
+**Common failure:** Claude Code and Claude Desktop use different config files and setup methods.  
+**Fix:** Check `~/.claude.json`, confirm Engram is listed under `mcpServers.engram`, then restart Claude Code.
+
