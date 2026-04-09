@@ -432,7 +432,7 @@ def _render_index(
     if workspace_error:
         error_html = f"""
         <div style="background:#fee2e2;border:1px solid #ef4444;padding:12px;margin-bottom:16px;border-radius:6px;">
-            <strong style="color:#dc2626;">⚠ Workspace Connection Error</strong>
+            <strong style="color:#dc2626;">⚐ Workspace Connection Error</strong>
             <p style="color:#991b1b;margin:8px 0 0 0;">{workspace_error}</p>
             <p style="color:#7f1d1d;margin:8px 0 0 0;font-size:13px;">
                 Run <code>engram verify</code> to diagnose or <code>engram setup</code> to reconfigure.
@@ -440,8 +440,38 @@ def _render_index(
         </div>
         """
 
+    # Onboarding checklist for new workspaces
+    checklist_items = [
+        ("First fact committed", facts_count > 0, "/dashboard/facts"),
+        ("Teammate invited", len(agents) > 1, "/dashboard"),
+        ("First conflict detected", open_conflicts > 0, "/dashboard/conflicts"),
+        ("First conflict resolved", resolved_conflicts > 0, "/dashboard/conflicts"),
+    ]
+
+    all_complete = all(checked for _, checked, _ in checklist_items)
+    checklist_html = ""
+    if not all_complete:
+        checklist_rows = ""
+        for label, checked, link in checklist_items:
+            status = "✓" if checked else "☐"
+            style = "color:#16a34a;" if checked else "color:#6b7280;"
+            checklist_rows += f"""
+            <tr>
+                <td style="padding:6px 12px;"><span style="{style}font-size:1.1rem;">{status}</span></td>
+                <td style="padding:6px 12px;color:#374151;">{label}</td>
+                <td style="padding:6px 12px;"><a href="{link}" style="color:#2563eb;font-size:0.85rem;">View</a></td>
+            </tr>"""
+
+        checklist_html = f"""
+        <div style="background:#f0f9ff;border:1px solid #bae6fd;padding:16px;margin-bottom:20px;border-radius:8px;">
+            <h3 style="margin:0 0 12px 0;font-size:1rem;color:#0369a1;">🚀 Getting Started</h3>
+            <p style="margin:0 0 12px 0;font-size:0.85rem;color:#64748b;">Complete these steps to get the most out of Engram:</p>
+            <table style="width:100%;border-collapse:collapse;">{checklist_rows}</table>
+        </div>"""
+
     body = f"""
     {error_html}
+    {checklist_html}
     <div class="stats">
       <div class="stat stat-accent">
         <div class="stat-value">{facts_count}</div>
