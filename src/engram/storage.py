@@ -61,6 +61,11 @@ class BaseStorage(ABC):
     async def get_facts_by_rowids(self, rowids: list[int]) -> list[dict]: ...
 
     @abstractmethod
+    async def get_distinct_scopes(self) -> list[str]:
+        """Return all unique scope values for the workspace."""
+        ...
+
+    @abstractmethod
     async def get_fact_by_id(self, fact_id: str) -> dict | None: ...
 
     @abstractmethod
@@ -503,6 +508,15 @@ class SQLiteStorage(BaseStorage):
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def get_distinct_scopes(self) -> list[str]:
+        """Return all unique scope values for the workspace."""
+        cursor = await self.db.execute(
+            "SELECT DISTINCT scope FROM facts WHERE workspace_id = ? AND valid_until IS NULL",
+            (self.workspace_id,),
+        )
+        rows = await cursor.fetchall()
+        return [r["scope"] for r in rows]
 
     async def get_fact_by_id(self, fact_id: str) -> dict | None:
         cursor = await self.db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))

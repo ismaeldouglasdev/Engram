@@ -189,6 +189,14 @@ class PostgresStorage(BaseStorage):
 
     # ── Query operations ─────────────────────────────────────────────
 
+    async def get_distinct_scopes(self) -> list[str]:
+        """Return all unique scope values for the workspace."""
+        rows = await self.pool.fetch(
+            "SELECT DISTINCT scope FROM facts WHERE workspace_id = $1 AND valid_until IS NULL",
+            self.workspace_id,
+        )
+        return [r["scope"] for r in rows]
+
     async def get_current_facts_in_scope(
         self,
         scope: str | None = None,

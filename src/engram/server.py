@@ -635,6 +635,7 @@ async def engram_query(
     fact_type: str | None = None,
     agent_id: str | None = None,
     include_ephemeral: bool = False,
+    include_adjacent: bool = False,
 ) -> list[dict[str, Any]]:
     """Query what your team's agents collectively know about a topic.
 
@@ -670,10 +671,15 @@ async def engram_query(
       facts. Ephemeral facts that appear in query results are tracked;
       once queried twice they are automatically promoted to durable.
       Default: false.
+    - include_adjacent: When true and a scope is provided, also searches
+      sibling and parent scopes for semantically related facts. Adjacent
+      results are marked with adjacent=true and include their original_scope
+      so you can distinguish in-scope from related knowledge. Useful when
+      a query might benefit from cross-cutting context. Default: false.
 
     Returns: List of claims with content, scope, confidence, agent_id,
     committed_at, has_open_conflict, verified, fact_type, durability,
-    and provenance metadata.
+    adjacent, and provenance metadata.
     """
     engine = get_engine()
 
@@ -702,6 +708,7 @@ async def engram_query(
         as_of=as_of,
         fact_type=fact_type,
         include_ephemeral=include_ephemeral,
+        include_adjacent=include_adjacent,
     )
 
 

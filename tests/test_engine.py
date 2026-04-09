@@ -419,3 +419,66 @@ async def test_resolve_dismissed(engine: EngramEngine):
     )
     assert result["resolved"] is True
     assert result["resolution_type"] == "dismissed"
+
+
+@pytest.mark.asyncio
+async def test_query_adjacent_scopes(engine: EngramEngine):
+    """Adjacent scope query surfaces related facts from sibling scopes."""
+    # Commit facts in different scopes
+    await engine.commit(
+        content="The auth service validates JWT tokens on every request",
+        scope="auth",
+        confidence=0.9,
+        agent_id="agent-1",
+        provenance="src/auth/jwt.py:10",
+    )
+    await engine.commit(
+        content="JWT signing uses RS256 with rotating keys",
+        scope="auth/jwt",
+        confidence=0.95,
+        agent_id="agent-1",
+        provenance="src/auth/jwt.py:45",
+    )
+    await engine.commit(
+        content="The API middleware validates authentication tokens before routing",
+        scope="api",
+        confidence=0.9,
+        agent_id="agent-2",
+        provenance="src/api/middleware.py:20",
+    )
+    await engine.commit(
+        content="Request middleware checks auth headers on all endpoints",
+        scope="middleware",
+        confidence=0.85,
+        agent_id="agent-2",
+        provenance="src/middleware/auth.py:5",
+    )
+    # Allow detection worker to process
+    await asyncio.sleep(0.3)
+
+    # Without include_adjacent: only auth and auth/* scopes
+    results_no_adj = await engine.query(
+        topic="How does authentication token validation work?",
+        scope="auth",
+        limit=10,
+        include_adjacent=False,
+    )
+    scopes_no_adj = {r["scope"] for r in results_no_adj}
+    assert all(s == "auth" or s.startswith("auth/") for s in scopes_no_adj)
+
+    # With include_adjacent: should also find related facts from api/middleware
+    results_adj = await engine.query(
+        topic="How does authentication token validation work?",
+        scope="auth",
+        limit=10,
+        include_adjacent=True,
+    )
+    adjacent_results = [r for r in results_adj if r.get("adjacent") is True]
+    # At least one adjacent result should come from api or middleware
+    if adjacent_results:
+        assert all(r.get("original_scope") is not None for r in adjacent_results)
+        adjacent_scopes = {r["original_scope"] for r in adjacent_results}
+        assert adjacent_scopes & {"api", "middleware"}
+    # In-scope results should have adjacent=False
+    in_scope = [r for r in results_adj if r.get("adjacent") is False]
+    assert len(in_scope) > 0

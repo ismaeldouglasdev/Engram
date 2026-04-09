@@ -340,20 +340,26 @@ class EngramEngine:
         as_of: str | None = None,
         fact_type: str | None = None,
         include_ephemeral: bool = False,
+        include_adjacent: bool = False,
     ) -> list[dict[str, Any]]:
         """Query what the team's agents collectively know about a topic.
-        
+
         Enhanced scoring (Phase 1 + Phase 2):
         - Prioritizes decisions over inferences over observations
         - Boosts facts with provenance (verified claims)
         - Rewards multi-agent corroboration
         - Penalizes facts with open conflicts
-        
+
         When ``include_ephemeral`` is True, ephemeral (scratchpad) facts are
         included in results alongside durable facts.  Ephemeral facts that
         appear in query results have their ``query_hits`` counter incremented;
         once a fact reaches 2 hits it is automatically promoted to durable
         (the "proved useful more than once" heuristic).
+
+        When ``include_adjacent`` is True and a scope is provided, the query
+        also searches sibling and parent scopes for semantically related facts.
+        Adjacent results are marked with ``adjacent=True`` and include their
+        ``original_scope`` so agents can distinguish in-scope from related facts.
         """
         limit = min(limit, 50)
 
@@ -524,7 +530,25 @@ class EngramEngine:
                 "corroborating_agents": fact.get("corroborating_agents", 0),
                 "relevance_score": round(score, 4),
                 "durability": fact.get("durability", "durable"),
+                "adjacent": False,
             })
+
+        # Surface related facts from adjacent (sibling/parent) scopes
+        if include_adjacent and scope:
+            in_scope_ids = {r["fact_id"] for r in results}
+            adjacent_results = await self._query_adjacent_scopes(
+                topic=topic,
+                scope=scope,
+                query_emb=query_emb,
+                exclude_ids=in_scope_ids,
+                open_conflict_ids=open_conflict_ids,
+                fact_type=fact_type,
+                as_of=as_of,
+                include_ephemeral=include_ephemeral,
+            )
+            results.extend(adjacent_results)
+            results.sort(key=lambda r: r["relevance_score"], reverse=True)
+            results = results[:limit]
 
         # Track query hits on ephemeral facts and auto-promote if threshold met
         if ephemeral_ids:
@@ -539,6 +563,97 @@ class EngramEngine:
                         pf["id"][:12],
                     )
 
+        return results
+
+    async def _query_adjacent_scopes(
+        self,
+        topic: str,
+        scope: str,
+        query_emb: "np.ndarray",
+        exclude_ids: set[str],
+        open_conflict_ids: set[str],
+        fact_type: str | None = None,
+        as_of: str | None = None,
+        include_ephemeral: bool = False,
+        similarity_threshold: float = 0.6,
+        score_penalty: float = 0.8,
+    ) -> list[dict[str, Any]]:
+        """Fetch semantically related facts from sibling and parent scopes."""
+        all_scopes = await self.storage.get_distinct_scopes()
+
+        # Determine parent scope
+        parent_scope = scope.rsplit("/", 1)[0] if "/" in scope else None
+
+        # Find sibling scopes (same parent prefix, excluding current scope and its children)
+        if "/" in scope:
+            parent_prefix = scope.rsplit("/", 1)[0] + "/"
+        else:
+            parent_prefix = ""
+
+        adjacent_scopes: list[str] = []
+        for s in all_scopes:
+            # Skip the queried scope and its children
+            if s == scope or s.startswith(scope + "/"):
+                continue
+            # Include parent scope
+            if parent_scope and s == parent_scope:
+                adjacent_scopes.append(s)
+                continue
+            # Include siblings (share the same parent prefix)
+            if parent_prefix and s.startswith(parent_prefix):
+                adjacent_scopes.append(s)
+                continue
+            # For top-level scopes, all other top-level scopes are siblings
+            if not parent_prefix and "/" not in s:
+                adjacent_scopes.append(s)
+
+        if not adjacent_scopes:
+            return []
+
+        # Fetch facts from adjacent scopes
+        adjacent_facts: list[dict] = []
+        for adj_scope in adjacent_scopes:
+            facts = await self.storage.get_current_facts_in_scope(
+                scope=adj_scope, fact_type=fact_type, as_of=as_of, limit=50,
+                include_ephemeral=include_ephemeral,
+            )
+            adjacent_facts.extend(facts)
+
+        # Score by cosine similarity and filter
+        results: list[dict[str, Any]] = []
+        for fact in adjacent_facts:
+            if fact["id"] in exclude_ids:
+                continue
+            if not fact.get("embedding"):
+                continue
+
+            fact_emb = embeddings.bytes_to_embedding(fact["embedding"])
+            sim = embeddings.cosine_similarity(query_emb, fact_emb)
+
+            if sim < similarity_threshold:
+                continue
+
+            score = sim * score_penalty
+
+            results.append({
+                "fact_id": fact["id"],
+                "content": fact["content"],
+                "scope": fact["scope"],
+                "confidence": fact["confidence"],
+                "fact_type": fact["fact_type"],
+                "agent_id": fact["agent_id"],
+                "committed_at": fact["committed_at"],
+                "has_open_conflict": fact["id"] in open_conflict_ids,
+                "verified": fact.get("provenance") is not None,
+                "provenance": fact.get("provenance"),
+                "corroborating_agents": fact.get("corroborating_agents", 0),
+                "relevance_score": round(score, 4),
+                "durability": fact.get("durability", "durable"),
+                "adjacent": True,
+                "original_scope": fact["scope"],
+            })
+
+        results.sort(key=lambda r: r["relevance_score"], reverse=True)
         return results
 
     # ── engram_promote ──────────────────────────────────────────────
