@@ -735,6 +735,116 @@ def config_set(key: str, value: str) -> None:
         raise click.ClickException(str(e))
 
     click.echo(f"Updated {key}={json.dumps(parsed_value)}")
+    
+# ── engram search ────────────────────────────────────────────────────
+
+
+def _format_search_results(topic: str, results: list[dict[str, object]]) -> str:
+    """Format search results for human-readable terminal output."""
+    if not results:
+        return f'No results found for "{topic}".'
+
+    lines = [f'Results for "{topic}" ({len(results)}):']
+    for idx, fact in enumerate(results, start=1):
+        scope = fact.get("scope") or "-"
+        content = fact.get("content") or ""
+        lines.append(f"{idx}. [{scope}] {content}")
+
+        meta: list[str] = []
+        if fact.get("fact_type"):
+            meta.append(f"type={fact['fact_type']}")
+        if fact.get("confidence") is not None:
+            meta.append(f"confidence={fact['confidence']:.2f}")
+        if fact.get("verified"):
+            meta.append("verified=yes")
+        if fact.get("provenance"):
+            meta.append(f"provenance={fact['provenance']}")
+        if fact.get("has_open_conflict"):
+            meta.append("open_conflict=yes")
+
+        if meta:
+            lines.append("   " + " ".join(meta))
+
+    return "\n".join(lines)
+
+
+async def _search_once(topic: str, scope: str | None, limit: int, as_json: bool) -> str:
+    """Run one terminal search against the current workspace."""
+    import os
+
+    from engram.engine import EngramEngine
+
+    logger = logging.getLogger("engram")
+
+    # Match the same backend-selection logic used by serve()
+    db_url = os.environ.get("ENGRAM_DB_URL", "")
+    workspace_id = "local"
+    schema = "engram"
+
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws and ws.db_url:
+            db_url = ws.db_url
+            workspace_id = ws.engram_id
+            schema = ws.schema
+    except Exception:
+        pass
+
+    if db_url:
+        from engram.postgres_storage import PostgresStorage
+
+        storage = PostgresStorage(db_url=db_url, workspace_id=workspace_id, schema=schema)
+        logger.info("Search mode: PostgreSQL (workspace: %s, schema: %s)", workspace_id, schema)
+    else:
+        from engram.storage import SQLiteStorage
+
+        storage = SQLiteStorage(db_path=str(DEFAULT_DB_PATH), workspace_id=workspace_id)
+        logger.info("Search mode: SQLite (%s, workspace: %s)", DEFAULT_DB_PATH, workspace_id)
+
+    await storage.connect()
+    engine = EngramEngine(storage)
+
+    try:
+        results = await engine.query(topic=topic, scope=scope, limit=limit)
+    finally:
+        await storage.close()
+
+    if as_json:
+        return json.dumps(results, indent=2)
+
+    return _format_search_results(topic, results)
+
+
+@main.command()
+@click.argument("topic")
+@click.option("--scope", default=None, help="Optional scope prefix to filter results.")
+@click.option(
+    "--limit",
+    default=10,
+    type=click.IntRange(1, 50),
+    show_default=True,
+    help="Maximum results to print.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print raw JSON results for piping.")
+def search(topic: str, scope: str | None, limit: int, as_json: bool) -> None:
+    """Query the workspace directly from the terminal without an agent session."""
+    try:
+        output = asyncio.run(
+            _search_once(
+                topic=topic,
+                scope=scope,
+                limit=limit,
+                as_json=as_json,
+            )
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc))
+
+    click.echo(output)
+    
+        
 
 
 # ── engram verify ────────────────────────────────────────────────────
