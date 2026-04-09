@@ -700,6 +700,102 @@ def token_create(engineer: str, agent_id: str | None, expires_hours: int) -> Non
     click.echo(tok)
 
 
+# ── engram config ─────────────────────────────────────────────────────
+
+
+@main.group()
+def config() -> None:
+    """View and update workspace configuration."""
+    pass
+
+
+@config.command("show")
+def config_show() -> None:
+    """Pretty-print the current workspace configuration."""
+    from engram.workspace import read_workspace, WORKSPACE_PATH
+    import os
+
+    if not WORKSPACE_PATH.exists():
+        db_url = os.environ.get("ENGRAM_DB_URL", "")
+        if not db_url:
+            click.echo("Error: No workspace configured.")
+            click.echo("  Run: engram init   or   engram join <invite-key>")
+            return
+        # Show env-based config
+        click.echo("=== Engram Configuration (from environment) ===")
+        click.echo(f"Mode: local (SQLite)")
+        click.echo(
+            f"Database URL: {db_url[:30]}..." if len(db_url) > 30 else f"Database URL: {db_url}"
+        )
+        return
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: Invalid workspace.json")
+        return
+
+    mode = "team (PostgreSQL)" if ws.db_url else "local (SQLite)"
+    click.echo("=== Engram Configuration ===")
+    click.echo(f"Engram ID: {ws.engram_id}")
+    click.echo(f"Mode: {mode}")
+    click.echo(f"Schema: {ws.schema}")
+    click.echo(f"Display Name: {ws.display_name or '(not set)'}")
+    click.echo(f"Anonymous Mode: {ws.anonymous_mode}")
+    click.echo(f"Anon Agents: {ws.anon_agents}")
+    if ws.db_url:
+        click.echo(
+            f"Database: {ws.db_url[:40]}..." if len(ws.db_url) > 40 else f"Database: {ws.db_url}"
+        )
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key: str, value: str) -> None:
+    """Update a single configuration field with validation.
+
+    Keys: anonymous_mode, anon_agents, display_name
+
+    Examples:
+        engram config set display_name "My Team"
+        engram config set anonymous_mode true
+        engram config set anon_agents false
+    """
+    from engram.workspace import read_workspace, write_workspace, WORKSPACE_PATH
+    import os
+
+    valid_keys = {"anonymous_mode", "anon_agents", "display_name"}
+    if key not in valid_keys:
+        click.echo(f"Error: Invalid key '{key}'. Valid keys: {', '.join(sorted(valid_keys))}")
+        return
+
+    if not WORKSPACE_PATH.exists():
+        click.echo("Error: No workspace configured.")
+        click.echo("  Run: engram init   or   engram join <invite-key>")
+        return
+
+    ws = read_workspace()
+    if not ws:
+        click.echo("Error: Invalid workspace.json")
+        return
+
+    # Validate and set value
+    if key in ("anonymous_mode", "anon_agents"):
+        if value.lower() not in ("true", "false"):
+            click.echo(f"Error: Value for '{key}' must be 'true' or 'false'")
+            return
+        bool_value = value.lower() == "true"
+        if key == "anonymous_mode":
+            ws.anonymous_mode = bool_value
+        else:
+            ws.anon_agents = bool_value
+    else:  # display_name
+        ws.display_name = value
+
+    write_workspace(ws)
+    click.echo(f"✓ Updated {key} = {value}")
+
+
 # ── engram verify ────────────────────────────────────────────────────
 
 
