@@ -67,11 +67,28 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         scope = request.query_params.get("scope")
         fact_type = request.query_params.get("fact_type")
         as_of = request.query_params.get("as_of")
-        facts = await storage.get_current_facts_in_scope(
-            scope=scope, fact_type=fact_type, as_of=as_of, limit=100
-        )
+        search_query = request.query_params.get("q", "").strip()
+
+        # Use FTS search if query provided
+        if search_query:
+            try:
+                fts_rowids = await storage.fts_search(search_query, limit=50)
+                if fts_rowids:
+                    facts = await storage.get_facts_by_rowids(fts_rowids)
+                else:
+                    facts = []
+            except Exception:
+                # FTS fallback - use regular query
+                facts = await storage.get_current_facts_in_scope(
+                    scope=scope, fact_type=fact_type, as_of=as_of, limit=100
+                )
+        else:
+            facts = await storage.get_current_facts_in_scope(
+                scope=scope, fact_type=fact_type, as_of=as_of, limit=100
+            )
+
         conflict_ids = await storage.get_open_conflict_fact_ids()
-        return HTMLResponse(_render_facts_table(facts, conflict_ids))
+        return HTMLResponse(_render_facts_table(facts, conflict_ids, search_query=search_query))
 
     async def conflict_queue(request: Request) -> HTMLResponse:
         scope = request.query_params.get("scope")
@@ -325,6 +342,10 @@ _DASH_STYLE = """
   .conflict-explanation { font-size: 0.78rem; color: #5a8a5a;
                            font-style: italic; margin-bottom: 0.75rem; }
 
+  .conflict-summary { font-size: 0.8rem; color: #1a3a1a; background: #fef3c7;
+                      border: 1px solid #fcd34d; border-radius: 6px; padding: 0.5rem;
+                      margin-bottom: 0.75rem; font-family: 'DM Sans', sans-serif; }
+
   .suggestion-box { background: #f0fdf4; border: 1px solid #86efac;
                     border-radius: 8px; padding: 0.9rem; margin-bottom: 0.75rem; }
   .suggestion-header { display: flex; align-items: center; gap: 0.5rem;
@@ -468,7 +489,7 @@ def _agent_row(a: dict) -> str:
     )
 
 
-def _render_facts_table(facts: list[dict], conflict_ids: set[str]) -> str:
+def _render_facts_table(facts: list[dict], conflict_ids: set[str], search_query: str = "") -> str:
     rows = []
     for f in facts:
         has_conflict = f["id"] in conflict_ids
@@ -479,8 +500,18 @@ def _render_facts_table(facts: list[dict], conflict_ids: set[str]) -> str:
             if verified
             else '<span class="badge badge-unverified">unverified</span>'
         )
+
+        # Highlight search terms in content
+        content = f["content"]
+        if search_query:
+            # Simple highlight - replace search terms with highlighted version
+            import re
+
+            pattern = re.compile(re.escape(search_query), re.IGNORECASE)
+            content = pattern.sub(f"<mark>{search_query}</mark>", content)
+
         rows.append(
-            f"<tr><td class='content-cell'>{_esc(f['content'])}</td>"
+            f"<tr><td class='content-cell'>{_esc(content)}</td>"
             f"<td>{_esc(f['scope'])}</td><td>{f['confidence']:.2f}</td>"
             f"<td>{_esc(f['fact_type'])}</td><td>{_esc(f['agent_id'])}</td>"
             f"<td>{conflict_badge} {ver_badge}</td>"
@@ -490,6 +521,7 @@ def _render_facts_table(facts: list[dict], conflict_ids: set[str]) -> str:
     <h2>Knowledge Base</h2>
     <div class="filter-bar">
       <form method="get" action="/dashboard/facts" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <input type="text" name="q" placeholder="Search facts..." value="{_esc(search_query)}" style="min-width:200px;">
         <input name="scope" placeholder="Scope filter" value="">
         <select name="fact_type">
           <option value="">All types</option>
@@ -498,7 +530,7 @@ def _render_facts_table(facts: list[dict], conflict_ids: set[str]) -> str:
           <option value="decision">decision</option>
         </select>
         <input name="as_of" placeholder="as_of (ISO 8601)" value="">
-        <button type="submit">Filter</button>
+        <button type="submit">Search</button>
       </form>
     </div>
     <div class="table-wrap">
@@ -596,6 +628,31 @@ def _render_conflict_card(c: dict) -> str:
     )
 
     explanation = c.get("explanation", "")
+
+    # Create a human-readable conflict summary
+    tier = c.get("detection_tier", "")
+    summary_html = ""
+    if tier == "tier0_entity" and explanation:
+        # Extract entity name and values for cleaner display
+        import re
+
+        match = re.search(
+            r"Entity '([^']+)' has conflicting values: '([^']+)' vs '([^']+)'", explanation
+        )
+        if match:
+            entity, val_a, val_b = match.groups()
+            summary_html = (
+                f'<div class="conflict-summary"><strong>{entity}</strong>: {val_a} ⟷ {val_b}</div>'
+            )
+    elif tier == "tier1_nli" and explanation:
+        # Clean up NLI explanation
+        match = re.search(
+            r'Semantic contradiction.*?:\s*"?([^"]+)"?\s*vs\s*"?([^"]+)"?', explanation
+        )
+        if match:
+            content_a, content_b = match.groups()
+            summary_html = f'<div class="conflict-summary">Conflicting claims: <em>{content_a[:50]}...</em> vs <em>{content_b[:50]}...</em></div>'
+
     expl_html = (
         f'<div class="conflict-explanation">{_esc(explanation)}</div>' if explanation else ""
     )
@@ -685,6 +742,7 @@ def _render_conflict_card(c: dict) -> str:
         f'<div class="conflict-facts">{fact_a_box}'
         f'<div class="vs-divider">vs</div>'
         f"{fact_b_box}</div>"
+        f"{summary_html}"
         f"{expl_html}"
         f"{suggestion_html}"
         f"{resolution_html}"
