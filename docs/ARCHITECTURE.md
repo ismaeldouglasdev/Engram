@@ -1,156 +1,295 @@
-# ARCHITECTURE.md - Engram Module Map for Contributors
+# ARCHITECTURE.md — Engram Module Map for Contributors
 
-This document provides an overview of Engram's codebase structure, helping new contributors understand how the pieces fit together.
+> **Read this first.** This is the map a new contributor — human or agent — should
+> read before touching anything in `src/engram/`. For design rationale, see
+> `docs/IMPLEMENTATION.md`. For schema migrations, see `docs/MIGRATION_SCHEMA.md`.
 
-## High-Level Architecture
+## Data Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     MCP Client (Claude, Cursor, etc.)          │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ MCP Protocol
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     engram/server.py                           │
-│                     (FastMCP server, 8 tools)                  │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              ▼                ▼                ▼
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐
-│   engine.py     │  │  dashboard.py   │  │     rest.py         │
-│ (Core logic)   │  │  (HTML UI)      │  │  (HTTP API)         │
-└────────┬────────┘  └────────┬────────┘  └──────────┬──────────┘
-         │                    │                      │
-         └────────────────────┼──────────────────────┘
-                              ▼
-         ┌───────────────────────────────────────────────┐
-         │              storage.py / postgres_storage.py │
-         │              (Data persistence layer)         │
-         └───────────────────────────────────────────────┘
+  Agent (Claude, Cursor, VS Code Copilot, …)
+    │
+    │  MCP (stdio or Streamable HTTP)
+    ▼
+ server.py ──────────────────────────────────────────────┐
+    │         REST (JSON)          HTML (HTMX)           │
+    │            │                    │                   │
+    │        rest.py            dashboard.py              │
+    │            │                    │                   │
+    │            └────────┬───────────┘                   │
+    │                     ▼                               │
+    │               engine.py                             │
+    │          ┌───────┬──┴──┬──────────┐                 │
+    │          ▼       ▼     ▼          ▼                 │
+    │    embeddings  entities secrets  suggester.py       │
+    │       .py       .py     .py   (async, optional)    │
+    │                     │                               │
+    │                     ▼                               │
+    │    storage.py (BaseStorage ABC)                     │
+    │       ├── SQLiteStorage          (local mode)       │
+    │       └── postgres_storage.py    (team mode)        │
+    │                     │                               │
+    │               schema.py  (DDL + migrations)         │
+    │                                                     │
+    │  Cross-cutting:                                     │
+    │    workspace.py  auth.py  federation.py  export.py  │
+    └─────────────────────────────────────────────────────┘
+
+  CLI entry point: cli.py  (engram serve / install / verify)
 ```
 
-## Module Overview
+## Module Map
 
-### Core Modules
+Each section states what the module does, its key public interface, and what it
+**must not** do.
 
-| Module | Location | Purpose |
-|--------|----------|---------|
-| **server.py** | `src/engram/server.py` | MCP server entry point. Defines 8 MCP tools using FastMCP. |
-| **engine.py** | `src/engram/engine.py` | Core memory engine. Handles commit, query, conflict detection. |
-| **storage.py** | `src/engram/storage.py` | SQLite storage backend. Implements `BaseStorage` interface. |
-| **postgres_storage.py** | `src/engram/postgres_storage.py` | PostgreSQL storage backend for team mode. |
+---
 
-### Supporting Modules
+### engine.py — Core Orchestrator
 
-| Module | Location | Purpose |
-|--------|----------|---------|
-| **workspace.py** | `src/engram/workspace.py` | Workspace config management (team ID, db_url, invite keys). |
-| **cli.py** | `src/engram/cli.py` | CLI commands (serve, verify, install). |
-| **schema.py** | `src/engram/schema.py` | Database schema definitions (SQLite + PostgreSQL). |
-| **dashboard.py** | `src/engram/dashboard.py` | HTML dashboard with HTMX. Routes: `/dashboard/*`. |
-| **rest.py** | `src/engram/rest.py` | REST API for non-MCP clients. Endpoints: `/api/commit`, `/api/query`. |
-| **embeddings.py** | `src/engram/embeddings.py` | Embedding generation using sentence-transformers. |
-| **suggester.py** | `src/engram/suggester.py` | LLM-powered conflict resolution suggestions. |
-| **entities.py** | `src/engram/entities.py` | Entity extraction and classification. |
-| **auth.py** | `src/engram/auth.py` | Authentication and rate limiting. |
-| **federation.py** | `src/engram/federation.py` | Cross-team federation (Phase 6). |
+`EngramEngine` owns the entire commit/query/conflict-detection pipeline. On
+commit it runs a 14-step pipeline: validate, strip PII (anonymous mode), scan
+for secrets, deduplicate, generate embeddings, extract entities and keywords,
+register the agent, determine lineage, insert the fact, detect conflicts, and
+check corroboration. On query it fuses embedding similarity and FTS via
+Reciprocal Rank Fusion with recency decay, agent trust, fact-type weighting,
+and corroboration boosts. It also runs six background async workers (conflict
+detection, TTL expiry, importance decay, NLI calibration, LLM suggestion
+queuing, and 72-hour auto-escalation).
 
-## MCP Tools (in server.py)
+**Public interface:** `commit()`, `query()`, `promote()`, `get_conflicts()`,
+`resolve()`, `batch_commit()`, `get_stats()`, `record_feedback()`,
+`get_timeline()`, `get_agents()`, `get_fact()`, `list_facts()`,
+`export_workspace()`, `get_lineage()`, `get_expiring_facts()`,
+`bulk_dismiss()`.
 
-The MCP server exposes 8 tools:
+**Must not:** access the database directly — all persistence goes through a
+`BaseStorage` implementation. Must not import or depend on any transport layer
+(`server.py`, `rest.py`, `dashboard.py`).
 
-1. **engram_status** - Check setup state, guides agent through onboarding
-2. **engram_init** - Create new workspace (team founder only)
-3. **engram_join** - Join existing workspace via invite key
-4. **engram_reset_invite_key** - Reset invite key after security breach
-5. **engram_commit** - Write verified fact to shared memory
-6. **engram_query** - Read what the team knows
-7. **engram_conflicts** - See contradictions between facts
-8. **engram_resolve** - Settle a disagreement
-9. **engram_promote** - Graduate ephemeral fact to durable memory
+---
 
-## Database Schema
+### server.py — MCP Tool Surface
 
-### PostgreSQL (Team Mode)
+Defines 17 MCP tools via FastMCP. Each tool is a thin adapter: validate input,
+call the corresponding `EngramEngine` method, format the response. Behavioral
+guidance (tool descriptions that steer agent behavior) lives here.
 
-Tables in the `engram` schema:
-- `workspaces` - Workspace configuration
-- `facts` - Committed knowledge facts
-- `facts_ephemeral` - Temporary facts (24h TTL)
-- `conflicts` - Detected contradictions
-- `claims` - Individual claims in conflicts
-- `invite_keys` - Invite key management
-- `query_log` - Query history for analytics
+**Public interface:** The MCP tool set — `engram_status`, `engram_init`,
+`engram_join`, `engram_reset_invite_key`, `engram_commit`, `engram_query`,
+`engram_conflicts`, `engram_resolve`, `engram_promote`, and others.
 
-### SQLite (Local Mode)
+**Must not:** contain business logic. No conflict detection, no query scoring,
+no direct database calls. If a tool needs new behavior, add it to `engine.py`
+and call it from here.
 
-Same schema but stored in `~/.engram/engram.db`.
+---
 
-## Key Design Patterns
+### storage.py — Local Storage (SQLite)
 
-### 1. Storage Abstraction
+Defines `BaseStorage`, the abstract interface (~45 methods) that all storage
+backends implement. Also provides `SQLiteStorage`, the local-mode
+implementation using aiosqlite with WAL mode, FTS5 full-text search, and BLOB
+embedding storage.
 
-Both `storage.py` and `postgres_storage.py` implement the `BaseStorage` interface, allowing the engine to work with either backend seamlessly.
+**Public interface:** `BaseStorage` (ABC), `SQLiteStorage`. Key methods:
+`insert_fact()`, `query_facts()`, `get_conflicts()`, `resolve_conflict()`,
+`upsert_agent()`, `get_workspace_stats()`, plus ~40 more CRUD operations.
 
-### 2. Conflict Detection Tiers
+**Must not:** contain business logic or orchestration. Storage executes queries
+and returns rows — it does not decide *what* to store or *when* to detect
+conflicts. That is `engine.py`'s job.
 
-- **Tier 0**: Entity exact-match (e.g., "rate limit is 1000" vs "rate limit is 2000")
-- **Tier 1**: NLI cross-encoder semantic similarity
-- **Tier 2**: Numeric/temporal rules
-- **Tier 3**: LLM escalation (rare, optional)
+---
 
-### 3. Invite Key Security
+### postgres_storage.py — Team Storage (PostgreSQL)
 
-Invite keys are self-contained JWT-like tokens containing:
-- Encrypted database URL
-- Workspace ID
-- Schema name
-- Key generation counter
+`PostgresStorage` implements `BaseStorage` for team deployments. Uses asyncpg
+connection pooling (min=2, max=10), pgvector for embedding similarity search
+(IVFFlat index), tsvector generated columns for GIN-indexed full-text search,
+JSONB for entities, and schema isolation (`SET search_path`) for multi-tenancy.
 
-When a key is reset, the generation counter increments, invalidating all old keys.
+**Public interface:** `PostgresStorage` (same `BaseStorage` contract).
 
-### 4. Dashboard Routes
+**Must not:** diverge from the `BaseStorage` interface. Any new storage method
+must be added to `BaseStorage` first, then implemented in both backends.
 
-The dashboard uses HTMX for progressive enhancement. Routes include:
-- `/dashboard` - Main knowledge base view
-- `/dashboard/conflicts` - Conflict queue
-- `/dashboard/activity` - Agent activity timeline
+---
 
-## Running the Project
+### schema.py — DDL and Migrations
 
-```bash
-# Development
-cd /home/ismaeldev/Engram
-source .venv/bin/activate
-python -m engram.cli serve --http
+Contains all database DDL (`SCHEMA_SQL` for SQLite, `POSTGRES_SCHEMA_SQL` for
+PostgreSQL) and incremental migration definitions (v2 through v7). Tables:
+`workspaces`, `facts`, `facts_ephemeral`, `conflicts`, `claims`,
+`invite_keys`, `agents`, `query_log`, plus FTS5 virtual tables and triggers.
 
-# Run tests
-pytest tests/ -x
+**Public interface:** `SCHEMA_SQL`, `POSTGRES_SCHEMA_SQL`, `MIGRATIONS`,
+`SCHEMA_VERSION`.
 
-# Dashboard at http://localhost:7474/dashboard
-```
+**Must not:** execute migrations itself — storage backends read from here and
+apply. When adding tables or columns, increment `SCHEMA_VERSION` and document
+the migration in `docs/MIGRATION_SCHEMA.md`.
 
-## Key Files for Contributors
+---
 
-| File | Why You Might Edit It |
-|------|----------------------|
-| `server.py` | Add new MCP tools, modify tool descriptions |
-| `engine.py` | Change conflict detection logic, query ranking |
-| `storage.py` | Add new queries, optimize existing ones |
-| `dashboard.py` | Add new dashboard views, modify UI |
-| `cli.py` | Add new CLI commands |
-| `docs/IMPLEMENTATION.md` | Deep dive into architecture decisions |
+### entities.py — Entity Extraction
 
-## External Dependencies
+Regex-based entity extraction and keyword generation for Tier 0/2 conflict
+detection and FTS enrichment. Extracts five entity types: numeric (with units),
+config keys (ALL_CAPS identifiers), service names, technology names, and version
+strings. Also provides stop-word filtered keyword extraction.
 
-- **FastMCP** - MCP server framework
-- **asyncpg** - PostgreSQL async driver (team mode)
-- **SQLAlchemy** - Database ORM
-- **sentence-transformers** - Embedding models for semantic search
-- **HTMX** - Dashboard UI (loaded from CDN)
+**Public interface:** `extract_entities(text) -> list[dict]`,
+`extract_keywords(text) -> list[str]`.
 
-## Version Info
+**Must not:** touch the database or import engine/storage. It is a pure
+function module — text in, structured data out.
 
-- Schema version tracked in `src/engram/schema.py`
-- Check `docs/MIGRATION_SCHEMA.md` when making DB changes
+---
+
+### embeddings.py — Vector Encoding
+
+Lazy-loads the `all-MiniLM-L6-v2` sentence-transformer model and produces
+384-dimensional embeddings for semantic search and NLI candidate sourcing.
+
+**Public interface:** `encode(text) -> list[float]`.
+
+**Must not:** manage model lifecycle beyond lazy loading. Must not query the
+database or make network calls. It is a pure function: text in, vector out.
+
+---
+
+### secrets.py — Pre-commit Secret Scanner
+
+Deterministic regex scanner with 11 patterns (AWS keys, JWT tokens, SSH private
+keys, database connection strings, etc.). Runs in <1ms. Called by the engine's
+commit pipeline to reject facts that contain secrets before they reach storage.
+
+**Public interface:** `scan_for_secrets(text) -> list[dict]`.
+
+**Must not:** store, log, or transmit the secrets it detects. Must not make
+network calls. It is a pure function: text in, match list out.
+
+---
+
+### workspace.py — Workspace Config and Invite Keys
+
+Manages workspace identity (`WorkspaceConfig` dataclass: engram_id, db_url,
+schema, privacy settings) persisted to `~/.engram/workspace.json` (mode 600).
+Also implements invite key cryptography: self-contained encrypted tokens using a
+32-byte AES-256 key, 16-byte IV, HMAC-SHA256 authentication, and XOR stream
+cipher. Payload includes db_url, engram_id, schema, expiration, and use count.
+
+**Public interface:** `WorkspaceConfig`, `read_workspace()`,
+`write_workspace()`, `generate_team_id()`, `generate_invite_key()`,
+`decode_invite_key()`.
+
+**Must not:** import engine or storage. Workspace config is read by the CLI and
+server at startup; the engine receives a ready-to-use storage instance.
+
+---
+
+### auth.py — Authentication and Rate Limiting
+
+Custom JWT implementation (HMAC-SHA256, no external dependencies) for team-mode
+token auth. Includes a per-agent sliding-window rate limiter and hierarchical,
+temporal scope permission checking.
+
+**Public interface:** `create_token()`, `verify_token()`, `RateLimiter`,
+`check_scope_permission()`.
+
+**Must not:** manage user accounts, passwords, or sessions — those concerns
+live in the hosted layer (`api/auth.py`). This module handles only agent-level
+token auth for the local/team server.
+
+---
+
+### cli.py — CLI Entry Point
+
+Click-based CLI providing the `engram` command group. Commands: `serve` (start
+MCP server, optionally with `--http` for Streamable HTTP on port 7474),
+`install` (auto-configure 30+ MCP clients), `verify` (check schema and
+workspace health), `token` (issue agent tokens), `config` (show/set workspace
+settings).
+
+**Public interface:** `main` (Click group), invoked as `engram <command>`.
+
+**Must not:** contain business logic. CLI commands wire together workspace
+config, engine initialization, and server startup. Logic belongs in `engine.py`.
+
+---
+
+### rest.py — REST API
+
+Starlette-based JSON API providing 16 endpoints (`/api/commit`, `/api/query`,
+`/api/conflicts`, etc.) for non-MCP clients. Each handler validates input, calls
+the engine, and returns JSON.
+
+**Public interface:** `create_rest_app(engine) -> Starlette`.
+
+**Must not:** contain business logic or query the database directly. Like
+`server.py`, it is a thin transport adapter over `engine.py`. Note: REST routes
+are defined but not mounted in `engram serve --http`; they are available for
+manual integration by downstream consumers.
+
+---
+
+### dashboard.py — HTML Dashboard
+
+Server-rendered HTMX dashboard mounted at `/dashboard`. Views: knowledge base,
+conflict queue, agent activity timeline, expiring facts. Progressive
+enhancement — works without JavaScript for basic views.
+
+**Public interface:** Dashboard route handlers, mounted as Starlette routes.
+Routes: `/dashboard`, `/dashboard/conflicts`, `/dashboard/activity`,
+`/dashboard/agents`, `/dashboard/expiring`.
+
+**Must not:** contain business logic. Calls `engine.py` methods, renders HTML.
+Must not write to the database.
+
+---
+
+### federation.py — Cross-team Sync
+
+Pull-based cross-team fact synchronization via aiohttp. A workspace can pull
+facts from a federated peer, deduplicating and re-embedding as needed.
+
+**Public interface:** Federation route handlers, exposed at `/federation/facts`.
+
+**Must not:** push facts to peers (pull-only design). Must not bypass the engine
+commit pipeline when ingesting federated facts.
+
+---
+
+### export.py — Workspace Snapshots
+
+Produces portable JSON and Markdown snapshots of a workspace. Supports secret
+redaction (re-scans facts through `secrets.py`) and anonymous mode (strips
+agent/engineer identifiers).
+
+**Public interface:** `build_json_export()`, `build_markdown_export()`.
+
+**Must not:** write files to disk — it returns the export content. The caller
+(engine or server tool) decides where to write it.
+
+---
+
+### suggester.py — LLM Conflict Resolution
+
+Generates resolution suggestions for detected conflicts using Claude Haiku.
+Queued asynchronously by the engine's suggestion background worker. Requires
+`ANTHROPIC_API_KEY` to be set; silently no-ops otherwise.
+
+**Public interface:** `generate_suggestion(conflict, facts) -> str`.
+
+**Must not:** resolve conflicts — it only *suggests*. Resolution authority
+remains with `engine.py` (via `resolve()`). Must not be called synchronously in
+the commit or query hot path.
+
+---
+
+### __init__.py — Package Metadata
+
+Defines the package version (`0.1.0`) and public imports.
+
+**Must not:** contain logic. Version bump only.
