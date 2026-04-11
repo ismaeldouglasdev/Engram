@@ -241,17 +241,18 @@ class PostgresStorage(BaseStorage):
             )
         return [_row_to_dict(r) for r in rows]
 
-    async def fts_search(self, query: str, limit: int = 20) -> list[int]:
+    async def fts_search(self, query: str, limit: int = 20, offset: int = 0) -> list[int]:
         """Full-text search using tsvector. Returns a list of pseudo-rowids (not used in PG)."""
         async with self.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, ts_rank(search_vector, plainto_tsquery('english', $1)) AS rank "
                 "FROM facts WHERE search_vector @@ plainto_tsquery('english', $1) "
                 "AND workspace_id = $2 AND valid_until IS NULL "
-                "ORDER BY rank DESC LIMIT $3",
+                "ORDER BY rank DESC LIMIT $3 OFFSET $4",
                 query,
                 self.workspace_id,
                 limit,
+                offset,
             )
         # Return ids as a list (PostgreSQL doesn't use integer rowids like SQLite)
         return [r["id"] for r in rows]

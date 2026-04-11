@@ -2,9 +2,17 @@
   "mcpServers": {
     "engram": {
       "command": "uv",
-      "args": ["run", "--project", "/Users/josh/Downloads/Engram", "engram", "serve"],
+      "args": [
+        "run",
+        "--project",
+        "/Users/josh/Downloads/Engram",
+        "engram",
+        "serve"
+      ],
       "disabled": false,
-      "autoApprove": []
+      "autoApprove": [
+        "engram_status"
+      ]
     }
   }
 }

@@ -51,6 +51,7 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         resolved_conflicts = await storage.count_conflicts("resolved")
         agents = await storage.get_agents()
         expiring = await storage.get_expiring_facts(days_ahead=7)
+        recent_activity = await storage.get_fact_timeline(limit=10)
         return HTMLResponse(
             _render_index(
                 facts_count=facts_count,
@@ -60,19 +61,55 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
                 agents=agents,
                 expiring_count=len(expiring),
                 workspace_error=workspace_error,
+                recent_activity=recent_activity,
             )
         )
+
+    async def fact_detail(request: Request) -> HTMLResponse:
+        """Render fact detail panel with lineage and version history."""
+        fact_id = request.path_params.get("fact_id", "")
+
+        fact = await storage.get_fact_by_id(fact_id)
+        if not fact:
+            return HTMLResponse(
+                '<div style="padding:2rem;"><h2>Fact not found</h2><a href="/dashboard/facts">Back to Knowledge Base</a></div>',
+                status_code=404,
+            )
+
+        lineage_id = fact.get("lineage_id")
+        lineage = []
+        if lineage_id:
+            lineage = await storage.get_facts_by_lineage(lineage_id)
+
+        return HTMLResponse(_render_fact_detail(fact, lineage))
+
+    async def fact_lineage(request: Request) -> HTMLResponse:
+        """Return lineage version history for a fact (HTMX partial)."""
+        fact_id = request.path_params.get("fact_id", "")
+
+        fact = await storage.get_fact_by_id(fact_id)
+        if not fact:
+            return HTMLResponse("<p>Fact not found</p>", status_code=404)
+
+        lineage_id = fact.get("lineage_id")
+        if not lineage_id:
+            return HTMLResponse("<p>No lineage history available</p>")
+
+        lineage = await storage.get_facts_by_lineage(lineage_id)
+        return HTMLResponse(_render_lineage_timeline(lineage))
 
     async def knowledge_base(request: Request) -> HTMLResponse:
         scope = request.query_params.get("scope")
         fact_type = request.query_params.get("fact_type")
         as_of = request.query_params.get("as_of")
         search_query = request.query_params.get("q", "").strip()
+        offset = int(request.query_params.get("offset", 0))
+        limit = int(request.query_params.get("limit", 100))
 
         # Use FTS search if query provided
         if search_query:
             try:
-                fts_rowids = await storage.fts_search(search_query, limit=50)
+                fts_rowids = await storage.fts_search(search_query, limit=limit, offset=offset)
                 if fts_rowids:
                     facts = await storage.get_facts_by_rowids(fts_rowids)
                 else:
@@ -80,21 +117,42 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
             except Exception:
                 # FTS fallback - use regular query
                 facts = await storage.get_current_facts_in_scope(
-                    scope=scope, fact_type=fact_type, as_of=as_of, limit=100
+                    scope=scope, fact_type=fact_type, as_of=as_of, limit=limit, offset=offset
                 )
         else:
             facts = await storage.get_current_facts_in_scope(
-                scope=scope, fact_type=fact_type, as_of=as_of, limit=100
+                scope=scope, fact_type=fact_type, as_of=as_of, limit=limit, offset=offset
             )
 
+        if not facts and offset > 0:
+            offset = 0
+            facts = await storage.get_current_facts_in_scope(
+                scope=scope, fact_type=fact_type, as_of=as_of, limit=limit, offset=0
+            )
+
+        scopes = await storage.get_distinct_scopes()
         conflict_ids = await storage.get_open_conflict_fact_ids()
-        return HTMLResponse(_render_facts_table(facts, conflict_ids, search_query=search_query))
+        return HTMLResponse(
+            _render_facts_table(
+                facts,
+                conflict_ids,
+                search_query=search_query,
+                offset=offset,
+                limit=limit,
+                scopes=scopes,
+            )
+        )
 
     async def conflict_queue(request: Request) -> HTMLResponse:
         scope = request.query_params.get("scope")
         status = request.query_params.get("status", "open")
         conflicts = await storage.get_conflicts(scope=scope, status=status)
-        return HTMLResponse(_render_conflicts_page(conflicts))
+
+        stats = {
+            "open": await storage.count_conflicts("open"),
+            "resolved": await storage.count_conflicts("resolved"),
+        }
+        return HTMLResponse(_render_conflicts_page(conflicts, stats=stats))
 
     async def approve_suggestion(request: Request) -> Response:
         """HTMX endpoint: approve the LLM-suggested resolution for a conflict."""
@@ -158,12 +216,14 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
     async def timeline(request: Request) -> HTMLResponse:
         scope = request.query_params.get("scope")
         facts = await storage.get_fact_timeline(scope=scope, limit=100)
-        return HTMLResponse(_render_timeline(facts))
+        scopes = await storage.get_distinct_scopes()
+        return HTMLResponse(_render_timeline(facts, scopes=scopes))
 
     async def agents_view(request: Request) -> HTMLResponse:
+        search_query = request.query_params.get("q", "").strip()
         agents = await storage.get_agents()
         feedback = await storage.get_detection_feedback_stats()
-        return HTMLResponse(_render_agents(agents, feedback))
+        return HTMLResponse(_render_agents(agents, feedback, search_query=search_query))
 
     async def expiring_view(request: Request) -> HTMLResponse:
         days = int(request.query_params.get("days", "7"))
@@ -183,6 +243,8 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
                 "anonymous_mode": ws.anonymous_mode,
                 "anon_agents": ws.anon_agents,
                 "is_creator": ws.is_creator,
+                "display_name": ws.display_name,
+                "description": ws.description,
             }
 
             # Get invite keys from storage
@@ -207,6 +269,8 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         Route("/", landing, methods=["GET"]),
         Route("/dashboard", index, methods=["GET"]),
         Route("/dashboard/facts", knowledge_base, methods=["GET"]),
+        Route("/dashboard/facts/{fact_id}", fact_detail, methods=["GET"]),
+        Route("/dashboard/facts/{fact_id}/lineage", fact_lineage, methods=["GET"]),
         Route("/dashboard/conflicts", conflict_queue, methods=["GET"]),
         Route("/dashboard/conflicts/{conflict_id}/approve", approve_suggestion, methods=["POST"]),
         Route("/dashboard/conflicts/{conflict_id}/dismiss", dismiss_conflict, methods=["POST"]),
@@ -426,7 +490,9 @@ _DASH_STYLE = """
 """
 
 
-def _dash_layout(title: str, body: str, active: str = "", dark_mode: bool = False) -> str:
+def _dash_layout(
+    title: str, body: str, active: str = "", dark_mode: bool = False, workspace_name: str = ""
+) -> str:
     def _nav_cls(name: str) -> str:
         return ' class="active"' if name == active else ""
 
@@ -440,6 +506,12 @@ def _dash_layout(title: str, body: str, active: str = "", dark_mode: bool = Fals
         if (isDark) document.documentElement.classList.add('dark');
       })();
     </script>"""
+
+    display_name_html = (
+        f'<span style="font-weight:400;opacity:0.7;">— {workspace_name}</span>'
+        if workspace_name
+        else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -459,7 +531,7 @@ def _dash_layout(title: str, body: str, active: str = "", dark_mode: bool = Fals
     <div class="dash-header">
       <div class="dash-title">
         <div class="dot"></div>
-        <h1>Engram Dashboard</h1>
+        <h1>Engram Dashboard{display_name_html}</h1>
       </div>
       <div style="display:flex;gap:1rem;align-items:center;">
         <button onclick="toggleTheme()" class="theme-toggle" title="Toggle dark mode">
@@ -476,6 +548,7 @@ def _dash_layout(title: str, body: str, active: str = "", dark_mode: bool = Fals
       <a href="/dashboard/agents"{_nav_cls("agents")}>Agents</a>
       <a href="/dashboard/expiring"{_nav_cls("expiring")}>Expiring</a>
       <a href="/dashboard/settings"{_nav_cls("settings")}>Settings</a>
+      <a href="#" onclick="showShortcuts();return false;" style="margin-left:auto;font-size:0.75rem;color:#9ab89a;">⌨ Shortcuts</a>
     </nav>
     {body}
   </div>
@@ -485,6 +558,14 @@ def _dash_layout(title: str, body: str, active: str = "", dark_mode: bool = Fals
       const isDark = html.classList.contains('dark');
       html.classList.toggle('dark');
       localStorage.setItem('engram-theme', isDark ? 'light' : 'dark');
+    }}
+    function showShortcuts() {{
+      alert('Keyboard Shortcuts:\n\n' +
+        'j/k - Navigate conflicts up/down\n' +
+        'a - Approve conflict fact A\n' +
+        'b - Approve conflict fact B\n' +
+        's - Dismiss/skip conflict\n' +
+        '? - Show this help');
     }}
     // Keyboard navigation for conflict queue
     document.addEventListener('keydown', function(e) {{
@@ -534,6 +615,7 @@ def _render_index(
     agents: list[dict],
     expiring_count: int,
     workspace_error: str | None = None,
+    recent_activity: list[dict] | None = None,
 ) -> str:
     # Show workspace error if present
     error_html = ""
@@ -606,14 +688,27 @@ def _render_index(
         <div class="stat-label">Expiring (7d)</div>
       </div>
     </div>
-    <h2>Recent Agents</h2>
-    <div class="table-wrap">
-    <table>
-      <tr><th>Agent</th><th>Engineer</th><th>Commits</th><th>Flagged</th><th>Last Seen</th></tr>
-      {"".join(_agent_row(a) for a in agents[:10])}
-    </table>
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:1.5rem;">
+      <div>
+        <h2>Recent Activity</h2>
+        <div class="table-wrap">
+        <table>
+          <tr><th>Fact</th><th>Scope</th><th>When</th></tr>
+          {"".join(f"<tr><td class='content-cell'>{_esc(f.get('content', '')[:60])}</td><td>{_esc(f.get('scope', ''))}</td><td>{_esc(f.get('committed_at', '')[:16])}</td></tr>" for f in (recent_activity or [])[:10])}
+        </table>
+        </div>
+      </div>
+      <div>
+        <h2>Recent Agents</h2>
+        <div class="table-wrap">
+        <table>
+          <tr><th>Agent</th><th>Commits</th></tr>
+          {"".join(f"<tr><td>{_esc(a.get('agent_id', ''))}</td><td>{a.get('total_commits', 0)}</td></tr>" for a in agents[:5])}
+        </table>
+        </div>
+      </div>
     </div>"""
-    return _dash_layout("Overview", body, active="overview")
+    return _dash_layout("Overview", body, active="overview", workspace_name=_get_workspace_name())
 
 
 def _agent_row(a: dict) -> str:
@@ -627,7 +722,14 @@ def _agent_row(a: dict) -> str:
     )
 
 
-def _render_facts_table(facts: list[dict], conflict_ids: set[str], search_query: str = "") -> str:
+def _render_facts_table(
+    facts: list[dict],
+    conflict_ids: set[str],
+    search_query: str = "",
+    offset: int = 0,
+    limit: int = 100,
+    scopes: list[str] | None = None,
+) -> str:
     rows = []
     for f in facts:
         has_conflict = f["id"] in conflict_ids
@@ -655,12 +757,28 @@ def _render_facts_table(facts: list[dict], conflict_ids: set[str], search_query:
             f"<td>{conflict_badge} {ver_badge}</td>"
             f"<td>{_esc(f.get('committed_at', '')[:19])}</td></tr>"
         )
+
+    prev_offset = max(0, offset - limit)
+    next_offset = offset + limit if len(facts) == limit else offset
+    pagination = ""
+    if offset > 0 or len(facts) == limit:
+        pagination = f"""
+        <div class="pagination" style="display:flex;gap:0.5rem;margin-top:1rem;">
+          <a href="?q={_esc(search_query)}&offset={prev_offset}&limit={limit}" class="btn-dismiss" {"style:pointer-events:none;opacity:0.5;" if offset == 0 else ""}>&larr; Previous</a>
+          <span style="padding:0.4rem 0.8rem;color:#5a8a5a;">Page {offset // limit + 1}</span>
+          <a href="?q={_esc(search_query)}&offset={next_offset}&limit={limit}" class="btn-dismiss" {"style:pointer-events:none;opacity:0.5;" if len(facts) < limit else ""}>Next &rarr;</a>
+        </div>"""
+
+    scope_options = ""
+    if scopes:
+        scope_options = "".join(f'<option value="{_esc(s)}">{_esc(s)}</option>' for s in scopes)
     body = f"""
     <h2>Knowledge Base</h2>
     <div class="filter-bar">
       <form method="get" action="/dashboard/facts" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
         <input type="text" name="q" placeholder="Search facts..." value="{_esc(search_query)}" style="min-width:200px;">
-        <input name="scope" placeholder="Scope filter" value="">
+        <input name="scope" placeholder="Scope filter" value="" list="scopes-list">
+        <datalist id="scopes-list">{scope_options}</datalist>
         <select name="fact_type">
           <option value="">All types</option>
           <option value="observation">observation</option>
@@ -668,7 +786,12 @@ def _render_facts_table(facts: list[dict], conflict_ids: set[str], search_query:
           <option value="decision">decision</option>
         </select>
         <input name="as_of" placeholder="as_of (ISO 8601)" value="">
+        <input type="hidden" name="offset" value="{offset}">
+        <input type="hidden" name="limit" value="{limit}">
         <button type="submit">Search</button>
+        <a href="?fact_type=observation" class="btn-dismiss">Observations</a>
+        <a href="?fact_type=inference" class="btn-dismiss">Inferences</a>
+        <a href="?fact_type=decision" class="btn-dismiss">Decisions</a>
       </form>
     </div>
     <div class="table-wrap">
@@ -678,16 +801,40 @@ def _render_facts_table(facts: list[dict], conflict_ids: set[str], search_query:
       {"".join(rows)}
     </table>
     </div>
-    <p class="count-note">{len(facts)} fact(s)</p>"""
-    return _dash_layout("Knowledge Base", body, active="facts")
+    <p class="count-note">{len(facts)} fact(s)</p>
+    {pagination}"""
+    return _dash_layout(
+        "Knowledge Base", body, active="facts", workspace_name=_get_workspace_name()
+    )
 
 
-def _render_conflicts_page(conflicts: list[dict]) -> str:
+def _render_conflicts_page(conflicts: list[dict], stats: dict | None = None) -> str:
     cards = "".join(_render_conflict_card(c) for c in conflicts)
     if not cards:
         cards = '<p style="color:#9ab89a;font-size:0.85rem;padding:1rem 0;">No conflicts found.</p>'
+
+    open_count = (
+        sum(1 for c in conflicts if c.get("status") == "open")
+        if stats is None
+        else stats.get("open", 0)
+    )
+    resolved_count = (
+        sum(1 for c in conflicts if c.get("status") == "resolved")
+        if stats is None
+        else stats.get("resolved", 0)
+    )
     body = f"""
     <h2>Conflict Queue</h2>
+    <div class="stats">
+      <div class="stat stat-warn">
+        <div class="stat-value">{open_count}</div>
+        <div class="stat-label">Open</div>
+      </div>
+      <div class="stat stat-ok">
+        <div class="stat-value">{resolved_count}</div>
+        <div class="stat-label">Resolved</div>
+      </div>
+    </div>
     <div class="filter-bar">
       <form method="get" action="/dashboard/conflicts" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
         <input name="scope" placeholder="Scope filter" value="">
@@ -708,7 +855,7 @@ def _render_conflicts_page(conflicts: list[dict]) -> str:
       <span><kbd>b</kbd> accept fact B</span>
       <span><kbd>s</kbd> skip</span>
     </div>"""
-    return _dash_layout("Conflicts", body, active="conflicts")
+    return _dash_layout("Conflicts", body, active="conflicts", workspace_name=_get_workspace_name())
 
 
 def _render_conflict_card(c: dict) -> str:
@@ -894,7 +1041,7 @@ def _render_conflict_card(c: dict) -> str:
     )
 
 
-def _render_timeline(facts: list[dict]) -> str:
+def _render_timeline(facts: list[dict], scopes: list[str] | None = None) -> str:
     rows = []
     for f in facts:
         is_superseded = f.get("valid_until") is not None
@@ -910,11 +1057,15 @@ def _render_timeline(facts: list[dict]) -> str:
             f"<td>{valid_range}</td>"
             f"<td><div class='{bar_class}' style='width:60px;'></div></td></tr>"
         )
+    scope_options = ""
+    if scopes:
+        scope_options = "".join(f'<option value="{_esc(s)}">{_esc(s)}</option>' for s in scopes)
     body = f"""
     <h2>Timeline</h2>
     <div class="filter-bar">
       <form method="get" action="/dashboard/timeline" style="display:flex;gap:0.5rem;">
-        <input name="scope" placeholder="Scope filter" value="">
+        <input name="scope" placeholder="Scope filter" value="" list="scopes-list">
+        <datalist id="scopes-list">{scope_options}</datalist>
         <button type="submit">Filter</button>
       </form>
     </div>
@@ -924,19 +1075,32 @@ def _render_timeline(facts: list[dict]) -> str:
       {"".join(rows)}
     </table>
     </div>"""
-    return _dash_layout("Timeline", body, active="timeline")
+    return _dash_layout("Timeline", body, active="timeline", workspace_name=_get_workspace_name())
 
 
-def _render_agents(agents: list[dict], feedback: dict[str, int]) -> str:
+def _render_agents(agents: list[dict], feedback: dict[str, int], search_query: str = "") -> str:
     rows = []
-    for a in agents:
+    filtered_agents = agents
+    if search_query:
+        filtered_agents = [
+            a
+            for a in agents
+            if search_query.lower() in a.get("agent_id", "").lower()
+            or search_query.lower() in a.get("engineer", "").lower()
+        ]
+    for a in filtered_agents:
         total = a.get("total_commits", 0)
         flagged = a.get("flagged_commits", 0)
         reliability = f"{(1 - flagged / total) * 100:.0f}%" if total > 0 else "N/A"
+        rel_score = (1 - flagged / total) * 100 if total > 0 else 0
+        rel_badge = (
+            '<span class="badge badge-high">🔥 Top</span>' if rel_score >= 90 and total >= 5 else ""
+        )
         rows.append(
             f"<tr><td>{_esc(a['agent_id'])}</td>"
             f"<td>{_esc(a.get('engineer', ''))}</td>"
-            f"<td>{total}</td><td>{flagged}</td><td>{reliability}</td>"
+            f"<td>{total}</td><td>{flagged}</td>"
+            f"<td>{reliability} {rel_badge}</td>"
             f"<td>{_esc(a.get('registered_at', '')[:19])}</td>"
             f"<td>{_esc(a.get('last_seen', '') or '')[:19]}</td></tr>"
         )
@@ -944,6 +1108,12 @@ def _render_agents(agents: list[dict], feedback: dict[str, int]) -> str:
     fp = feedback.get("false_positive", 0)
     body = f"""
     <h2>Agent Activity</h2>
+    <div class="filter-bar">
+      <form method="get" action="/dashboard/agents" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <input type="text" name="q" placeholder="Search agents..." value="{_esc(search_query)}" style="min-width:180px;">
+        <button type="submit">Search</button>
+      </form>
+    </div>
     <div class="stats">
       <div class="stat">
         <div class="stat-value">{len(agents)}</div>
@@ -964,8 +1134,9 @@ def _render_agents(agents: list[dict], feedback: dict[str, int]) -> str:
           <th>Reliability</th><th>Registered</th><th>Last Seen</th></tr>
       {"".join(rows)}
     </table>
-    </div>"""
-    return _dash_layout("Agents", body, active="agents")
+    </div>
+    <p class="count-note">{len(filtered_agents)} agent(s)</p>"""
+    return _dash_layout("Agents", body, active="agents", workspace_name=_get_workspace_name())
 
 
 def _render_expiring(facts: list[dict], days: int) -> str:
@@ -992,7 +1163,9 @@ def _render_expiring(facts: list[dict], days: int) -> str:
     </table>
     </div>
     <p class="count-note">{len(facts)} fact(s) expiring within {days} day(s)</p>"""
-    return _dash_layout("Expiring Facts", body, active="expiring")
+    return _dash_layout(
+        "Expiring Facts", body, active="expiring", workspace_name=_get_workspace_name()
+    )
 
 
 def _render_settings(workspace_info: dict | None) -> str:
@@ -1003,7 +1176,9 @@ def _render_settings(workspace_info: dict | None) -> str:
             <p>No workspace configured.</p>
             <p>Run <code>engram setup</code> or <code>engram init</code> to create a workspace.</p>
         </div>"""
-        return _dash_layout("Settings", body, active="settings")
+        return _dash_layout(
+            "Settings", body, active="settings", workspace_name=_get_workspace_name()
+        )
 
     engram_id = workspace_info.get("engram_id", "Unknown")
     schema = workspace_info.get("schema", "engram")
@@ -1037,8 +1212,21 @@ def _render_settings(workspace_info: dict | None) -> str:
     else:
         invite_keys_html = "<p style='color:#6b7280;'>No invite keys found.</p>"
 
+    display_name = workspace_info.get("display_name", "")
+    description = workspace_info.get("description", "")
+
     body = f"""
     <h2>Workspace Settings</h2>
+    
+    <div style="margin-bottom:2rem;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Display Name</h3>
+        <code style="background:#f3f4f6;padding:0.5rem;border-radius:4px;">{_esc(display_name) or "(not set)"}</code>
+    </div>
+    
+    <div style="margin-bottom:2rem;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Description</h3>
+        <code style="background:#f3f4f6;padding:0.5rem;border-radius:4px;">{_esc(description) or "(not set)"}</code>
+    </div>
     
     <div style="margin-bottom:2rem;">
         <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Workspace ID</h3>
@@ -1077,7 +1265,20 @@ def _render_settings(workspace_info: dict | None) -> str:
         <button class="btn-dismiss" style="background:#fee2e2;color:#dc2626;border-color:#fecaca;">Delete Workspace</button>
     </div>"""
 
-    return _dash_layout("Settings", body, active="settings")
+    return _dash_layout("Settings", body, active="settings", workspace_name=_get_workspace_name())
+
+
+def _get_workspace_name() -> str:
+    """Get the workspace display name for header."""
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws and ws.display_name:
+            return ws.display_name
+    except Exception:
+        pass
+    return ""
 
 
 def _esc(s: Any) -> str:
@@ -1091,3 +1292,108 @@ def _esc(s: Any) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _render_fact_detail(fact: dict, lineage: list[dict]) -> str:
+    """Render detailed view of a single fact with lineage and query log."""
+    fact_id = fact.get("id", "")
+    content = _esc(fact.get("content", ""))
+    scope = _esc(fact.get("scope", ""))
+    fact_type = _esc(fact.get("fact_type", ""))
+    confidence = fact.get("confidence", 0.0)
+    agent_id = _esc(fact.get("agent_id", ""))
+    committed_at = fact.get("committed_at", "")[:19]
+    provenance = fact.get("provenance")
+    lineage_id = fact.get("lineage_id", "")
+    query_hits = fact.get("query_hits", 0)
+    durability = fact.get("durability", "durable")
+
+    verified = (
+        '<span class="badge badge-verified">verified</span>'
+        if provenance
+        else '<span class="badge badge-unverified">unverified</span>'
+    )
+    durability_badge = (
+        f'<span class="badge badge-low">{durability}</span>' if durability == "ephemeral" else ""
+    )
+
+    lineage_html = ""
+    if lineage_id:
+        lineage_html = f"""
+        <div style="margin-top:1rem;">
+            <h4 style="font-size:0.9rem;color:#6b7280;margin-bottom:0.5rem;">Version History</h4>
+            <div hx-get="/dashboard/facts/{fact_id}/lineage" hx-trigger="load" hx-swap="innerHTML">
+                <p style="color:#9ab89a;font-size:0.85rem;">Loading lineage...</p>
+            </div>
+        </div>
+        """
+
+    body = f"""
+    <div style="max-width:800px;margin:0 auto;">
+        <a href="/dashboard/facts" style="color:#6b7280;text-decoration:none;">&larr; Back to Knowledge Base</a>
+        
+        <div style="margin-top:1.5rem;padding:1.5rem;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb;">
+            <h2 style="font-size:1.25rem;color:#111827;margin-bottom:1rem;">{content}</h2>
+            
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-bottom:1rem;">
+                <div><span style="color:#6b7280;font-size:0.85rem;">Scope</span><div>{scope}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Type</span><div>{fact_type}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Confidence</span><div>{confidence:.2f}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Agent</span><div>{agent_id}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Committed</span><div>{committed_at}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Status</span><div>{verified} {durability_badge}</div></div>
+            </div>
+
+            <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #e5e7eb;">
+                <h4 style="font-size:0.9rem;color:#6b7280;margin-bottom:0.5rem;">Query Log</h4>
+                <div style="display:flex;gap:1rem;">
+                    <div style="background:#fff;padding:0.5rem 1rem;border-radius:6px;border:1px solid #e5e7eb;">
+                        <span style="color:#6b7280;font-size:0.8rem;">Times Queried</span>
+                        <div style="font-size:1.5rem;font-weight:600;color:#111827;">{query_hits}</div>
+                    </div>
+                    <div style="background:#fff;padding:0.5rem 1rem;border-radius:6px;border:1px solid #e5e7eb;">
+                        <span style="color:#6b7280;font-size:0.8rem;">Corroborating Agents</span>
+                        <div style="font-size:1.5rem;font-weight:600;color:#111827;">{fact.get("corroborating_agents", 0)}</div>
+                    </div>
+                </div>
+            </div>
+            
+            {lineage_html}
+        </div>
+    </div>
+    """
+    return _dash_layout("Fact Detail", body, active="facts")
+
+
+def _render_lineage_timeline(lineage: list[dict]) -> str:
+    """Render lineage version history as a timeline."""
+    if not lineage:
+        return "<p style='color:#9ab89a;font-size:0.85rem;'>No version history</p>"
+
+    items = []
+    for i, f in enumerate(lineage):
+        content = _esc(f.get("content", ""))[:100]
+        if len(f.get("content", "")) > 100:
+            content += "..."
+        committed = f.get("committed_at", "")[:19]
+        agent = _esc(f.get("agent_id", ""))
+        confidence = f.get("confidence", 0.0)
+        is_current = f.get("is_current", False)
+
+        marker = (
+            '<span class="badge badge-verified">current</span>'
+            if is_current
+            else f"v{len(lineage) - i}"
+        )
+        items.append(
+            f"""<div style="padding:0.75rem;margin-left:1rem;border-left:2px solid #e5e7eb;{"" if i == len(lineage) - 1 else "border-bottom:1px solid #f3f4f6;"}">
+            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">
+                <span style="font-weight:600;color:#374151;">{marker}</span>
+                <span style="color:#6b7280;font-size:0.8rem;">{committed}</span>
+            </div>
+            <div style="color:#111827;font-size:0.9rem;">{content}</div>
+            <div style="color:#9ca3af;font-size:0.8rem;">agent: {agent} &middot; conf: {confidence:.2f}</div>
+        </div>"""
+        )
+
+    return f"<div style='margin-top:0.5rem;'>{''.join(items)}</div>"

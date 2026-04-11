@@ -159,12 +159,14 @@ async def engram_status() -> dict[str, Any]:
         "status": "unconfigured",
         "next_prompt": (
             "Welcome to Engram — shared memory for your team's agents.\n\n"
-            "Do you have an Invite Key to join an existing workspace, "
-            "or are you setting up a new one?\n\n"
-            "If setting up a new workspace, you'll need a PostgreSQL database. "
-            "You can either:\n"
-            "  • Use your existing app database (Engram creates a separate 'engram' schema)\n"
-            "  • Get a free dedicated database at neon.tech, supabase.com, or railway.app"
+            "How would you like to get started?\n\n"
+            "1. **Engram Cloud** (Recommended) — Quickest setup. Get an invite key from your team admin, "
+            "or sign up at https://engram.us to create a workspace.\n"
+            "2. **PostgreSQL (Self-hosted)** — Use your own database. "
+            "You'll need a PostgreSQL connection URL ready.\n"
+            "3. **SQLite (Local only)** — For solo use or quick experiments. "
+            "No team features available.\n\n"
+            "Type the number of your choice, or paste your Invite Key to join an existing workspace."
         ),
     }
 
@@ -182,8 +184,19 @@ async def engram_init(
 ) -> dict[str, Any]:
     """Set up a new Engram workspace (team founder only).
 
-    Requires ENGRAM_DB_URL to be set in the environment. Runs schema
-    setup, generates a Team ID and invite key, and writes workspace.json.
+    **Precondition:** ENGRAM_DB_URL must be set in your environment.
+
+    **When to call:**
+    - When you're the first team member setting up shared memory
+    - After engram_status returns "unconfigured" or "awaiting_db"
+
+    **What NOT to do:**
+    - Don't call this if you're joining an existing workspace — use engram_join instead
+    - Don't paste database credentials in chat — use environment variables
+    - Don't set up workspaces for others — give them the invite key instead
+
+    **Common mistake:** Setting up a new workspace when you should join an existing one.
+    Only call this if you're the workspace founder. Teammates should use engram_join.
 
     The invite key contains the database URL encrypted inside it —
     teammates only need the Team ID and Invite Key (not the db URL).
@@ -199,6 +212,8 @@ async def engram_init(
       your application tables.
 
     Returns: {status, engram_id, invite_key, next_prompt}
+
+    Example: {"status": "initialized", "engram_id": "ENG-XXXXXX", "invite_key": "ek_live_..."}
     """
     db_url = os.environ.get("ENGRAM_DB_URL", "")
     if not db_url:
@@ -301,6 +316,20 @@ async def engram_init(
 async def engram_join(invite_key: str) -> dict[str, Any]:
     """Join an existing Engram workspace using only an Invite Key.
 
+    **Precondition:** You must have a valid invite key from the workspace creator.
+
+    **When to call:**
+    - After engram_status prompts you to join a workspace
+    - When the workspace creator shares an invite key with you
+
+    **What NOT to do:**
+    - Don't call this if you're creating a new workspace — use engram_init instead
+    - Don't share invite keys publicly — they contain encrypted database credentials
+    - Don't use expired or revoked keys — request a new one from the creator
+
+    **Common mistake:** Trying to join before getting a valid invite key. Ask the
+    workspace creator for their invite key first.
+
     The invite key contains everything needed — the database URL and
     workspace ID are encrypted inside it. No Team ID required.
 
@@ -308,6 +337,8 @@ async def engram_join(invite_key: str) -> dict[str, Any]:
     - invite_key: The invite key shared by the workspace founder (e.g. ek_live_...).
 
     Returns: {status, engram_id, schema, next_prompt}
+
+    Example: {"status": "ready", "engram_id": "ENG-XXXXXX", "schema": "engram"}
     """
     from engram.workspace import (
         WorkspaceConfig,
@@ -375,6 +406,68 @@ async def engram_join(invite_key: str) -> dict[str, Any]:
     }
 
 
+# ── engram_rename ────────────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def engram_rename(
+    display_name: str = "",
+    description: str = "",
+) -> dict[str, Any]:
+    """Set or update the workspace display name and description (issue #64).
+
+    Workspaces are identified by UUID (engram_id). This tool allows setting
+    a human-readable name like "Acme Payments Team" and optional description.
+
+    Parameters:
+    - display_name: Human-readable workspace name (e.g., "Engineering Team").
+      Set to empty string to clear.
+    - description: Optional description of the workspace purpose.
+
+    Returns: {status, display_name, description, next_prompt}
+
+    Example: {"status": "updated", "display_name": "Engineering Team"}
+    """
+    from engram.workspace import read_workspace, set_workspace_setting
+
+    ws = read_workspace()
+    if ws is None:
+        return {
+            "status": "error",
+            "next_prompt": "No workspace configured. Run engram init or engram join first.",
+        }
+
+    errors = []
+    if "display_name" in (ws and str(ws)) or display_name:
+        try:
+            set_workspace_setting("display_name", display_name)
+        except ValueError as e:
+            errors.append(str(e))
+
+    if description:
+        try:
+            set_workspace_setting("description", description)
+        except ValueError as e:
+            errors.append(str(e))
+
+    if errors:
+        return {
+            "status": "error",
+            "next_prompt": f"Failed to update workspace: {'; '.join(errors)}",
+        }
+
+    updated = read_workspace()
+    return {
+        "status": "updated",
+        "display_name": updated.display_name if updated else display_name,
+        "description": updated.description if updated else description,
+        "next_prompt": (
+            f"Workspace updated: {display_name or '(unnamed)'}\n"
+            f"Description: {description or 'None'}"
+        ),
+    }
+
+
 # ── engram_reset_invite_key ──────────────────────────────────────────
 
 
@@ -384,6 +477,21 @@ async def engram_reset_invite_key(
     invite_uses: int = 10,
 ) -> dict[str, Any]:
     """Reset the workspace invite key (workspace creator only).
+
+    **Precondition:** You must be the workspace creator (is_creator=true in workspace.json).
+
+    **When to call:**
+    - When you suspect a security breach or compromised key
+    - When you need to revoke access for a former team member
+    - As part of periodic security rotation (recommended: quarterly)
+
+    **What NOT to do:**
+    - Don't call this without reason — all team members will be disconnected
+    - Don't call this if you're not the workspace creator — you'll get an error
+    - Don't forget to share the new key with your team after resetting
+
+    **Common mistake:** Forgetting to share the new invite key with team members after
+    resetting, leaving them unable to reconnect.
 
     Use this when you suspect a security breach or the current invite key
     has been compromised. This will:
@@ -402,6 +510,8 @@ async def engram_reset_invite_key(
     - invite_uses: Max number of times the new key can be used (default 10).
 
     Returns: {status, invite_key, key_generation, next_prompt}
+
+    Example: {"status": "ready", "invite_key": "ek_live_...", "key_generation": 2}
     """
     from engram.workspace import (
         WorkspaceConfig,
@@ -599,6 +709,8 @@ async def engram_commit(
 
     Returns: {fact_id, committed_at, duplicate, conflicts_detected,
               memory_op, supersedes_fact_id, durability, suggestions}
+
+    Example: {"fact_id": "fact_xyz789", "committed_at": "2026-04-10T15:30:00Z", "duplicate": false, "conflicts_detected": 0}
     """
     engine = get_engine()
 
@@ -711,6 +823,21 @@ async def engram_query(
     Returns: List of claims with content, scope, confidence, agent_id,
     committed_at, has_open_conflict, verified, fact_type, durability,
     adjacent, and provenance metadata.
+
+    Example return:
+    [
+      {
+        "id": "fact_abc123",
+        "content": "The auth service rate-limits to 1000 req/s per IP using Redis",
+        "scope": "auth",
+        "confidence": 0.95,
+        "agent_id": "claude-code",
+        "committed_at": "2026-04-10T15:30:00Z",
+        "has_open_conflict": false,
+        "verified": true,
+        "fact_type": "observation"
+      }
+    ]
     """
     engine = get_engine()
 
@@ -802,6 +929,17 @@ async def engram_conflicts(
 
     Returns: List of conflicts with claim pairs, severity, detection
     method, and resolution status.
+
+    Example return:
+    [
+      {
+        "id": "conflict_123",
+        "severity": "medium",
+        "status": "open",
+        "fact_a": {"content": "Auth uses JWT with 1h expiry", "scope": "auth", "agent_id": "agent1"},
+        "fact_b": {"content": "Auth uses JWT with 24h expiry", "scope": "auth", "agent_id": "agent2"}
+      }
+    ]
     """
     engine = get_engine()
     return await engine.get_conflicts(scope=scope, status=status)
@@ -825,6 +963,21 @@ async def engram_resolve(
 ) -> dict[str, Any]:
     """Settle a disagreement between claims.
 
+    **Precondition:** Call engram_conflicts first to see the conflict you want to resolve.
+
+    **When to call:**
+    - After reviewing a conflict and determining which claim is correct
+    - When two claims are both partially correct and you want to merge them
+    - When a detected conflict is actually a false positive
+
+    **What NOT to do:**
+    - Don't resolve without reviewing both claims — you might pick the wrong one
+    - Don't use "winner" without specifying winning_claim_id
+    - Don't ignore conflicts — they indicate contradictory team beliefs
+
+    **Common mistake:** Resolving conflicts without reading both claims carefully. Always
+    review the actual content before deciding which is correct.
+
     Three resolution types:
     - "winner": One claim is correct. Pass winning_claim_id. The losing
       claim is marked superseded.
@@ -841,6 +994,8 @@ async def engram_resolve(
     - winning_claim_id: Required when resolution_type is "winner".
 
     Returns: {resolved: true, conflict_id, resolution_type}
+
+    Example: {"resolved": true, "conflict_id": "conflict_123", "resolution_type": "winner"}
     """
     engine = get_engine()
     return await engine.resolve(
@@ -903,6 +1058,8 @@ async def engram_batch_commit(
         {index, status: "ok"|"duplicate"|"error", fact_id?, error?}
       ]
     }
+
+    Example: {"total": 5, "committed": 4, "duplicates": 0, "failed": 1, "results": [{"index": 0, "status": "ok", "fact_id": "fact_123"}, {"index": 1, "status": "error", "error": "Secret detected: Email Address"}]}
 
     Limits: Maximum 100 facts per batch.
     """

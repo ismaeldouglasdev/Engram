@@ -817,27 +817,27 @@ def stats(output_json: bool) -> None:
     base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
 
     try:
-        # Use /api/conflicts to get conflict count
-        url = f"{base_url}/api/conflicts?status=open&limit=1"
+        url = f"{base_url}/api/stats"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
 
             if output_json:
-                click.echo(
-                    json.dumps(
-                        {"workspace_id": ws.engram_id, "conflicts": data.get("conflicts", [])},
-                        indent=2,
-                    )
-                )
+                click.echo(json.dumps({"workspace_id": ws.engram_id, **data}, indent=2))
             else:
-                conflicts = data.get("conflicts", [])
+                facts = data.get("facts", {})
+                conflicts = data.get("conflicts", {})
+                agents = data.get("agents", {})
                 click.echo("=== Workspace Stats ===")
                 click.echo(f"Workspace: {ws.engram_id}")
                 click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
-                click.echo(f"Open Conflicts: {len(conflicts)}")
+                click.echo(f"Total Facts: {facts.get('total', 0)}")
+                click.echo(f"Current Facts: {facts.get('current', 0)}")
+                click.echo(f"Expiring Soon: {facts.get('expiring_soon', 0)}")
+                click.echo(f"Open Conflicts: {conflicts.get('open', 0)}")
+                click.echo(f"Resolved: {conflicts.get('resolved', 0)}")
+                click.echo(f"Total Agents: {agents.get('total', 0)}")
     except urllib.error.HTTPError:
-        # Fallback - just show workspace info
         click.echo("=== Workspace Stats ===")
         click.echo(f"Workspace: {ws.engram_id}")
         click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
@@ -1532,6 +1532,58 @@ def completion(shell: str | None) -> None:
         click.echo(f"Appended completion hook to {config_path}")
 
     click.echo(f"Restart your shell or run: source {config_path}")
+
+
+@main.command("export")
+@click.option(
+    "--format", type=click.Choice(["json", "markdown"]), default="json", help="Export format."
+)
+@click.option("--output", "-o", type=click.Path(), help="Output file (stdout if not specified).")
+@click.option("--scope", help="Filter by scope prefix.")
+def export_cmd(format: str, output: str | None, scope: str | None) -> None:
+    """Export workspace facts to JSON or Markdown."""
+    import os
+    import urllib.request
+
+    ws = None
+    try:
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+    except Exception:
+        pass
+
+    if not ws:
+        click.echo("Error: No workspace configured")
+        return
+
+    mcp_url = os.environ.get("ENGRAM_MCP_URL", "http://localhost:7474")
+    base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
+
+    try:
+        url = f"{base_url}/api/facts?scope={scope or ''}&limit=10000"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            facts = data.get("facts", [])
+
+        from engram.export import build_json_export, build_markdown_export
+
+        if format == "json":
+            result = build_json_export(ws.engram_id, facts, [])
+            content = json.dumps(result, indent=2)
+        else:
+            result = build_markdown_export(ws.engram_id, facts, [])
+            content = result
+
+        if output:
+            with open(output, "w") as f:
+                f.write(content)
+            click.echo(f"Exported {len(facts)} facts to {output}")
+        else:
+            click.echo(content)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
 
 
 if __name__ == "__main__":

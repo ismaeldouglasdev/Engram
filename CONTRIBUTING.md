@@ -28,7 +28,7 @@ python -m engram.cli serve --http
 # 5. Ask your agent (Claude Code, Cursor, etc.) to set up Engram
 # Your agent will call engram_init and you'll see it working.
 
-# 5. Make a change → open a PR
+# 6. Make a change → open a PR
 git checkout -b your-feature-or-fix
 ```
 
@@ -43,6 +43,7 @@ Not sure where to start? These are always useful:
 - **Add test coverage** for an edge case you noticed
 - **Document a non-obvious behavior** in a code comment or the README
 - **Pick a roadmap item** from [README.md#roadmap](./README.md#roadmap) — comment on the issue before starting so we can align
+- **Add a quickstart guide** for your favorite IDE in `docs/quickstart/` — we already have Claude Code, Cursor, and VS Code, but need more
 
 ---
 

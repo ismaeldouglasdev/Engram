@@ -536,8 +536,8 @@ class SQLiteStorage(BaseStorage):
                  AND valid_until IS NULL
                  AND durability = 'ephemeral'
                  AND workspace_id = ?
-                 AND datetime(substr(valid_from, 1, 19), '+' || ttl_days || ' days') < datetime('now')""",
-            (now, self.workspace_id),
+                 AND datetime(valid_from, '+' || ttl_days || ' days') < ?""",
+            (now, self.workspace_id, now),
         )
         await self.db.commit()
         return cursor.rowcount
@@ -649,14 +649,9 @@ class SQLiteStorage(BaseStorage):
         return result
 
     async def promote_fact(self, fact_id: str) -> bool:
-        """Promote an ephemeral fact to durable. Returns True if promoted.
-
-        Clears ``valid_until`` and ``ttl_days`` so the fact is no longer
-        subject to TTL expiry — making the promotion a permanent override.
-        """
+        """Promote an ephemeral fact to durable. Returns True if promoted."""
         cursor = await self.db.execute(
-            "UPDATE facts SET durability = 'durable', valid_until = NULL, ttl_days = NULL"
-            " WHERE id = ? AND durability = 'ephemeral'",
+            "UPDATE facts SET durability = 'durable' WHERE id = ? AND durability = 'ephemeral'",
             (fact_id,),
         )
         await self.db.commit()

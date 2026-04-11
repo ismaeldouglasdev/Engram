@@ -536,8 +536,8 @@ class SQLiteStorage(BaseStorage):
                  AND valid_until IS NULL
                  AND durability = 'ephemeral'
                  AND workspace_id = ?
-                 AND datetime(substr(valid_from, 1, 19), '+' || ttl_days || ' days') < datetime('now')""",
-            (now, self.workspace_id),
+                 AND datetime(valid_from, '+' || ttl_days || ' days') < ?""",
+            (now, self.workspace_id, now),
         )
         await self.db.commit()
         return cursor.rowcount
