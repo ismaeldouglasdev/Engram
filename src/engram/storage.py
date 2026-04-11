@@ -54,7 +54,7 @@ class BaseStorage(ABC):
     ) -> list[dict]: ...
 
     @abstractmethod
-    async def fts_search(self, query: str, limit: int = 20) -> list[int]: ...
+    async def fts_search(self, query: str, limit: int = 20, offset: int = 0) -> list[int]: ...
 
     @abstractmethod
     async def get_facts_by_rowids(self, rowids: list[int]) -> list[dict]: ...
@@ -581,11 +581,11 @@ class SQLiteStorage(BaseStorage):
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def fts_search(self, query: str, limit: int = 20) -> list[int]:
+    async def fts_search(self, query: str, limit: int = 20, offset: int = 0) -> list[int]:
         """FTS5 BM25 search. Returns rowids ordered by relevance."""
         cursor = await self.db.execute(
-            "SELECT rowid, rank FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rank LIMIT ?",
-            (query, limit),
+            "SELECT rowid, rank FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rank LIMIT ? OFFSET ?",
+            (query, limit, offset),
         )
         rows = await cursor.fetchall()
         return [r["rowid"] for r in rows]
