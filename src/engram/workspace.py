@@ -117,7 +117,10 @@ def parse_config_value(key: str, raw_value: str) -> Any:
         return _parse_bool(raw_value)
 
     if key == "display_name":
-        return raw_value.strip()
+        stripped = raw_value.strip()
+        if not stripped:
+            raise ValueError("display_name cannot be empty")
+        return stripped
 
     if key == "description":
         return raw_value.strip()

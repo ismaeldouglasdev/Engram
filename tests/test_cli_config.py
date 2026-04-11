@@ -28,6 +28,7 @@ def test_config_show_prints_editable_settings(monkeypatch, tmp_path):
         "anonymous_mode": True,
         "anon_agents": False,
         "display_name": "Tunde",
+        "description": "",
     }
 
 
