@@ -188,7 +188,7 @@ async def _validate_key(invite_key: str, engram_id: str, pool: Any) -> bool:
         key_hash = _invite_key_hash(invite_key)
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT uses_remaining FROM invite_keys WHERE key_hash = $1 AND engram_id = $2",
+                f"SELECT uses_remaining FROM {SCHEMA}.invite_keys WHERE key_hash = $1 AND engram_id = $2",
                 key_hash,
                 engram_id,
             )
@@ -230,25 +230,25 @@ async def handle_search(request: Request) -> JSONResponse:
     try:
         async with pool.acquire() as conn:
             fact_rows = await conn.fetch(
-                """SELECT id, lineage_id, content, scope, confidence, fact_type,
+                f"""SELECT id, lineage_id, content, scope, confidence, fact_type,
                           committed_at, valid_until, memory_op, supersedes_fact_id, durability
-                   FROM facts
+                   FROM {SCHEMA}.facts
                    WHERE workspace_id = $1
                    ORDER BY committed_at DESC
                    LIMIT 500""",
                 engram_id,
             )
             conflict_rows = await conn.fetch(
-                """SELECT id, fact_a_id, fact_b_id, explanation, severity, status, detected_at
-                   FROM conflicts
+                f"""SELECT id, fact_a_id, fact_b_id, explanation, severity, status, detected_at
+                   FROM {SCHEMA}.conflicts
                    WHERE workspace_id = $1
                    ORDER BY detected_at DESC
                    LIMIT 200""",
                 engram_id,
             )
             agent_rows = await conn.fetch(
-                """SELECT agent_id, engineer, label, last_seen, total_commits
-                   FROM agents WHERE workspace_id = $1""",
+                f"""SELECT agent_id, engineer, label, last_seen, total_commits
+                   FROM {SCHEMA}.agents WHERE workspace_id = $1""",
                 engram_id,
             )
     except Exception:
@@ -320,7 +320,7 @@ async def handle_session_search(request: Request) -> JSONResponse:
     try:
         async with pool.acquire() as conn:
             owns = await conn.fetchrow(
-                "SELECT 1 FROM user_workspaces WHERE user_id = $1 AND engram_id = $2",
+                f"SELECT 1 FROM {SCHEMA}.user_workspaces WHERE user_id = $1 AND engram_id = $2",
                 session["sub"],
                 engram_id,
             )
@@ -336,25 +336,25 @@ async def handle_session_search(request: Request) -> JSONResponse:
     try:
         async with pool.acquire() as conn:
             fact_rows = await conn.fetch(
-                """SELECT id, lineage_id, content, scope, confidence, fact_type,
+                f"""SELECT id, lineage_id, content, scope, confidence, fact_type,
                           committed_at, valid_until, memory_op, supersedes_fact_id, durability
-                   FROM facts
+                   FROM {SCHEMA}.facts
                    WHERE workspace_id = $1
                    ORDER BY committed_at DESC
                    LIMIT 500""",
                 engram_id,
             )
             conflict_rows = await conn.fetch(
-                """SELECT id, fact_a_id, fact_b_id, explanation, severity, status, detected_at
-                   FROM conflicts
+                f"""SELECT id, fact_a_id, fact_b_id, explanation, severity, status, detected_at
+                   FROM {SCHEMA}.conflicts
                    WHERE workspace_id = $1
                    ORDER BY detected_at DESC
                    LIMIT 200""",
                 engram_id,
             )
             agent_rows = await conn.fetch(
-                """SELECT agent_id, engineer, label, last_seen, total_commits
-                   FROM agents WHERE workspace_id = $1""",
+                f"""SELECT agent_id, engineer, label, last_seen, total_commits
+                   FROM {SCHEMA}.agents WHERE workspace_id = $1""",
                 engram_id,
             )
     except Exception:

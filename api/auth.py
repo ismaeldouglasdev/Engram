@@ -269,11 +269,11 @@ async def handle_signup(request: Request) -> JSONResponse:
 
     try:
         async with pool.acquire() as conn:
-            existing = await conn.fetchrow("SELECT id FROM users WHERE email = $1", email)
+            existing = await conn.fetchrow(f"SELECT id FROM {SCHEMA}.users WHERE email = $1", email)
             if existing:
                 return JSONResponse({"error": "Email already registered"}, status_code=409)
             await conn.execute(
-                "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)",
+                f"INSERT INTO {SCHEMA}.users (id, email, password_hash) VALUES ($1, $2, $3)",
                 user_id,
                 email,
                 password_hash,
@@ -305,7 +305,9 @@ async def handle_login(request: Request) -> JSONResponse:
 
     try:
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT id, password_hash FROM users WHERE email = $1", email)
+            row = await conn.fetchrow(
+                f"SELECT id, password_hash FROM {SCHEMA}.users WHERE email = $1", email
+            )
     except Exception as exc:
         return JSONResponse({"error": f"Login failed: {exc}"}, status_code=500)
 
@@ -332,18 +334,18 @@ async def handle_me(request: Request) -> JSONResponse:
         pool = await _get_pool()
         async with pool.acquire() as conn:
             user = await conn.fetchrow(
-                "SELECT id, email, stripe_customer_id, created_at FROM users WHERE id = $1",
+                f"SELECT id, email, stripe_customer_id, created_at FROM {SCHEMA}.users WHERE id = $1",
                 session["sub"],
             )
             if not user:
                 return JSONResponse({"error": "User not found"}, status_code=404)
 
             workspaces = await conn.fetch(
-                """SELECT uw.engram_id, uw.role,
+                f"""SELECT uw.engram_id, uw.role,
                           w.paused, w.storage_bytes, w.plan, w.stripe_customer_id AS ws_stripe_id,
                           w.created_at AS ws_created_at
-                   FROM user_workspaces uw
-                   LEFT JOIN workspaces w ON w.engram_id = uw.engram_id
+                   FROM {SCHEMA}.user_workspaces uw
+                   LEFT JOIN {SCHEMA}.workspaces w ON w.engram_id = uw.engram_id
                    WHERE uw.user_id = $1
                    ORDER BY w.created_at DESC""",
                 session["sub"],
@@ -398,7 +400,7 @@ async def handle_connect_workspace(request: Request) -> JSONResponse:
             # Verify key exists in DB
             key_hash = _invite_key_hash(invite_key)
             key_row = await conn.fetchrow(
-                "SELECT uses_remaining FROM invite_keys WHERE key_hash = $1 AND engram_id = $2",
+                f"SELECT uses_remaining FROM {SCHEMA}.invite_keys WHERE key_hash = $1 AND engram_id = $2",
                 key_hash,
                 engram_id,
             )
@@ -407,7 +409,7 @@ async def handle_connect_workspace(request: Request) -> JSONResponse:
 
             # Link workspace to user
             await conn.execute(
-                """INSERT INTO user_workspaces (user_id, engram_id, role)
+                f"""INSERT INTO {SCHEMA}.user_workspaces (user_id, engram_id, role)
                    VALUES ($1, $2, 'owner')
                    ON CONFLICT (user_id, engram_id) DO NOTHING""",
                 session["sub"],
@@ -582,7 +584,7 @@ async def handle_invite_key(request: Request) -> JSONResponse:
         pool = await _get_pool()
         async with pool.acquire() as conn:
             owns = await conn.fetchrow(
-                "SELECT 1 FROM user_workspaces WHERE user_id = $1 AND engram_id = $2",
+                f"SELECT 1 FROM {SCHEMA}.user_workspaces WHERE user_id = $1 AND engram_id = $2",
                 session["sub"],
                 engram_id,
             )
@@ -592,7 +594,7 @@ async def handle_invite_key(request: Request) -> JSONResponse:
                 )
 
             row = await conn.fetchrow(
-                "SELECT pin_salt, encrypted_key FROM workspace_keys WHERE engram_id = $1",
+                f"SELECT pin_salt, encrypted_key FROM {SCHEMA}.workspace_keys WHERE engram_id = $1",
                 engram_id,
             )
     except Exception as exc:
