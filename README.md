@@ -240,9 +240,12 @@ Grounded in the [FiFA/MaRS research](https://arxiv.org/abs/2512.12856) on forget
 
 ## Research Foundation
 
-Engram is grounded in peer-reviewed research on multi-agent memory systems:
+Engram exists because of a paper.
 
-- **[Yu et al. (2026)](https://arxiv.org/abs/2603.10062)** — Multi-agent memory as a computer architecture problem
+**[Multi-Agent Memory from a Computer Architecture Perspective: Visions and Challenges Ahead](https://arxiv.org/abs/2603.10062)** — Yu et al. (2026), UCSD SysEvol — is the primary intellectual foundation of this project. It reframes multi-agent memory as a computer architecture problem: coherence, consistency, and shared state across concurrent agents. That framing is what Engram is built to implement in practice.
+
+The rest of the literature informs specific subsystems:
+
 - **[Xu et al. (2025)](https://arxiv.org/abs/2502.12110)** — A-Mem's Zettelkasten structure for fact enrichment
 - **[Rasmussen et al. (2025)](https://arxiv.org/abs/2501.13956)** — Graphiti's bitemporal modeling for temporal validity
 - **[Hu et al. (2026)](https://arxiv.org/abs/2512.13564)** — Survey confirming shared memory as an open frontier
