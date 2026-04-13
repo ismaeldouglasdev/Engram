@@ -4,7 +4,9 @@
       "url": "https://www.engram-memory.com/mcp",
       "disabled": false,
       "autoApprove": [
-        "engram_status"
+        "engram_status",
+        "engram_join",
+        "engram_commit"
       ]
     }
   }
