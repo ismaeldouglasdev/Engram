@@ -174,19 +174,19 @@ async def _get_pool() -> Any:
         try:
             await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
             await conn.execute(f"SET search_path TO {SCHEMA}, public")
-            # Try multi-statement first, fall back to individual
-            try:
-                await conn.execute(_SCHEMA_SQL)
-            except Exception as exc:
-                logger.warning("Multi-statement schema failed (%s), trying individually", exc)
-                await conn.execute(f"SET search_path TO {SCHEMA}, public")
-                for stmt in _SCHEMA_SQL.split(";"):
-                    stmt = stmt.strip()
-                    if stmt:
-                        try:
-                            await conn.execute(stmt)
-                        except Exception as stmt_exc:
-                            logger.warning("Statement failed: %s — %s", stmt[:60], stmt_exc)
+            # Execute each statement individually — most reliable across providers
+            for stmt in _SCHEMA_SQL.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    await conn.execute(stmt)
+            # Verify critical tables exist
+            check = await conn.fetchval(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_schema = $1 AND table_name = 'workspaces'",
+                SCHEMA,
+            )
+            if not check:
+                raise RuntimeError("Schema bootstrap completed but workspaces table not found")
             _schema_version_applied = _SCHEMA_VERSION
         except Exception as exc:
             logger.error("Schema bootstrap failed: %s", exc)
