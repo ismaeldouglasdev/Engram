@@ -85,55 +85,7 @@ If `engram` is not on your `PATH`, `python -m engram.cli ...` works reliably.
 
 ## Setup Flow
 
-### Creating a Workspace
-
-> 🤖 **Agent**
->
-> Do you have an Invite Key to join an existing workspace, or are you setting up a new one?
-
-> 👤 **You**
->
-> New
-
-> 🤖 **Agent**
->
-> ✅ Your team workspace is ready.
->
-> Share this Invite Key with teammates:
-> ```
-> ek_live_abc123...
-> ```
->
-> That's all they need — one key, nothing else to configure.
->
-> Should commits show who made them, or stay anonymous?
-
----
----
-
-## 🎥 Getting Started Video
-
-Watch this quick demo to get started with Engram:
-
-(Video coming soon — placeholder added for future update)
-> This video walks through installation, setup, and basic usage.
-
----
-### Joining a Workspace
-
-> 🤖 **Agent**
->
-> Do you have an Invite Key to join an existing workspace, or are you setting up a new one?
-
-> 👤 **You**
->
-> Join — here's my key: `ek_live_abc123...`
-
-> 🤖 **Agent**
->
-> You're in. I'll query team memory before starting work on anything.
-
-**That's it.** Teammates only need the Invite Key. No database URL, no Team ID, no configuration.
+Create an account at [engram-memory.com](https://engram-memory.com) to start a workspace. A demo video is coming soon that will walk through the full setup flow.
 
 ---
 
