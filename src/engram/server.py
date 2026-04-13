@@ -96,8 +96,33 @@ def _read_engram_env() -> str | None:
     return None
 
 
+_CREDENTIALS_CONTENT_TEMPLATE = """\
+# Engram — Global Credentials
+# Written by engram join / engram init.
+# Read by the Claude Code UserPromptSubmit hook (~/.engram/hooks/auto_commit.py)
+# to auto-commit every user message to shared memory at the shell level.
+#
+# Keep this file private — it contains workspace credentials.
+ENGRAM_SERVER_URL={server_url}
+ENGRAM_INVITE_KEY={invite_key}
+"""
+
+
+def _write_global_credentials(
+    invite_key: str, server_url: str = "https://www.engram-memory.com"
+) -> None:
+    """Write ~/.engram/credentials for the shell-level auto-commit hook."""
+    creds_path = Path.home() / ".engram" / "credentials"
+    creds_path.parent.mkdir(parents=True, exist_ok=True)
+    creds_path.write_text(
+        _CREDENTIALS_CONTENT_TEMPLATE.format(server_url=server_url, invite_key=invite_key)
+    )
+    creds_path.chmod(0o600)
+    logger.info("Wrote global credentials to %s", creds_path)
+
+
 def _write_engram_env(invite_key: str, server_url: str = "https://www.engram-memory.com") -> None:
-    """Write .engram.env to the current working directory with the invite key and server URL."""
+    """Write .engram.env to the current working directory and global credentials."""
     env_path = Path.cwd() / _ENGRAM_ENV_FILENAME
     content = (
         "# Engram — Shared Team Memory\n"
@@ -118,6 +143,7 @@ def _write_engram_env(invite_key: str, server_url: str = "https://www.engram-mem
     env_path.write_text(content)
     env_path.chmod(0o600)
     logger.info("Wrote %s", env_path)
+    _write_global_credentials(invite_key, server_url)
 
 
 async def _join_workspace(invite_key: str) -> dict[str, Any]:

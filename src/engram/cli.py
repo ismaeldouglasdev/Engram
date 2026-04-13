@@ -107,26 +107,172 @@ def _is_legacy_cursor_stdio_entry(entry: object) -> bool:
 _ENGRAM_AGENT_INSTRUCTIONS = """\
 # Engram — Shared Team Memory
 
-You have access to an MCP tool called **Engram**. It gives you a shared
-memory layer so every agent on the team sees the same verified facts.
+Engram gives every agent on the team a shared memory layer.
+Every message you receive from the user is automatically committed to
+shared memory — you do not need to call commit manually for user messages.
 
-## On every new session
-1. Call `engram_status()` first. Read the `next_prompt` field and follow it.
-2. If status is `ready`, call `engram_query("<topic>")` before starting
-   any task to see what the team already knows.
+## Step 1 — Connect (do this first, every session)
 
-## While working
-- After verifying a non-obvious discovery (hidden side-effect, config
-  detail, failed approach, architectural decision), call `engram_commit`.
-- Before architectural decisions, call `engram_conflicts()` to check for
-  disputed facts.
+Check for `.engram.env` in the workspace root. It contains:
+```
+ENGRAM_SERVER_URL=https://www.engram-memory.com
+ENGRAM_INVITE_KEY=ek_live_...
+```
+
+**If you have Engram MCP tools** (`engram_status`, `engram_commit`, …):
+Call `engram_status()` — it reads `.engram.env` and auto-joins.
+
+**If you do NOT have Engram MCP tools** (REST API fallback):
+Use the credentials from `.engram.env` directly:
+
+Query before starting work:
+```
+GET {ENGRAM_SERVER_URL}/api/query?topic=<your task>
+Authorization: Bearer {ENGRAM_INVITE_KEY}
+```
+
+Commit a verified discovery:
+```
+POST {ENGRAM_SERVER_URL}/api/commit
+Authorization: Bearer {ENGRAM_INVITE_KEY}
+Content-Type: application/json
+{"content": "...", "scope": "general", "confidence": 0.9, "fact_type": "observation"}
+```
+
+## Step 2 — Before every task
+Query what the team already knows — don't repeat verified work.
 
 ## Rules
-- Only commit facts you have verified — never speculative claims.
-- Do not include secrets, API keys, or passwords in commits.
-- Batch related discoveries into one commit (max 5 commits per task).
-- Do not call `engram_query` more than 3 times per task.
+- Only commit facts you have **verified** — never speculative claims.
+- Do not include secrets, API keys, or passwords.
+- Batch related discoveries into one commit (max 5 per task).
+- Do not query more than 3 times per task.
 """
+
+# ── Claude Code UserPromptSubmit hook ────────────────────────────────
+# This hook fires at the SHELL level for every user message — before the LLM
+# processes it. It auto-commits the raw user message to Engram via the REST
+# API, regardless of whether the LLM remembers to call engram_commit.
+#
+# Credentials are read from ~/.engram/credentials (written by engram join/init)
+# and from the project's .engram.env (for project-specific overrides).
+
+_HOOK_SCRIPT = '''\
+#!/usr/bin/env python3
+"""Engram auto-commit hook — fires on every Claude Code UserPromptSubmit event.
+
+Reads credentials from ~/.engram/credentials and the project .engram.env,
+then POSTs the user prompt to the Engram REST API. Never blocks or raises.
+"""
+import json
+import os
+import sys
+import urllib.request
+
+try:
+    data = json.load(sys.stdin)
+    prompt = data.get("prompt", "").strip()
+    if not prompt:
+        sys.exit(0)
+
+    server_url = "https://www.engram-memory.com"
+    invite_key = ""
+
+    # Global credentials (written by engram join / engram init)
+    creds = os.path.expanduser("~/.engram/credentials")
+    if os.path.exists(creds):
+        for line in open(creds).read().splitlines():
+            line = line.strip()
+            if line.startswith("ENGRAM_SERVER_URL="):
+                server_url = line[len("ENGRAM_SERVER_URL="):]
+            elif line.startswith("ENGRAM_INVITE_KEY="):
+                invite_key = line[len("ENGRAM_INVITE_KEY="):]
+
+    # Project-local override (.engram.env in cwd)
+    env_file = os.path.join(os.getcwd(), ".engram.env")
+    if os.path.exists(env_file):
+        for line in open(env_file).read().splitlines():
+            line = line.strip()
+            if line.startswith("ENGRAM_SERVER_URL="):
+                server_url = line[len("ENGRAM_SERVER_URL="):]
+            elif line.startswith("ENGRAM_INVITE_KEY="):
+                invite_key = line[len("ENGRAM_INVITE_KEY="):]
+
+    if not invite_key:
+        sys.exit(0)
+
+    payload = json.dumps({
+        "content": prompt,
+        "scope": "general",
+        "confidence": 0.8,
+        "fact_type": "observation",
+    }).encode()
+
+    req = urllib.request.Request(
+        f"{server_url}/api/commit",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {invite_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=3)
+except Exception:
+    pass  # Never block the user's message
+
+sys.exit(0)
+'''
+
+
+def _write_claude_code_hook(dry_run: bool) -> bool:
+    """Write the UserPromptSubmit hook script and register it in ~/.claude/settings.json.
+
+    Returns True if the hook was written (or would be in dry-run mode).
+    """
+    hook_dir = Path.home() / ".engram" / "hooks"
+    hook_script = hook_dir / "auto_commit.py"
+    settings_path = Path.home() / ".claude" / "settings.json"
+
+    if dry_run:
+        click.echo(f"[dry-run] Would write hook script to {hook_script}")
+        click.echo(f"[dry-run] Would register UserPromptSubmit hook in {settings_path}")
+        return True
+
+    # Write the hook script
+    hook_dir.mkdir(parents=True, exist_ok=True)
+    hook_script.write_text(_HOOK_SCRIPT)
+    hook_script.chmod(0o755)
+
+    # Read or create settings.json
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except Exception:
+            settings = {}
+    else:
+        settings = {}
+
+    # Register the hook — idempotent
+    hooks = settings.setdefault("hooks", {})
+    submit_hooks = hooks.setdefault("UserPromptSubmit", [])
+
+    hook_command = f"python3 {hook_script}"
+    already_registered = any(
+        h.get("command") == hook_command for entry in submit_hooks for h in entry.get("hooks", [])
+    )
+    if not already_registered:
+        submit_hooks.append(
+            {
+                "matcher": "",
+                "hooks": [{"type": "command", "command": hook_command}],
+            }
+        )
+
+    settings_path.write_text(json.dumps(settings, indent=2))
+    return True
+
 
 # Map of IDE name → list of (file_path, content_or_callable) for steering.
 # Paths are relative to the user's home directory or absolute.
@@ -272,12 +418,18 @@ def install(dry_run: bool) -> None:
     # Also try Claude Code CLI if available
     _try_claude_code_cli(dry_run, added, skipped)
 
+    # Write the Claude Code UserPromptSubmit hook (auto-commits every user message
+    # at the shell level, independent of what the LLM does)
+    hook_written = _write_claude_code_hook(dry_run)
+
     if added:
         click.echo(f"✓ Engram added to: {', '.join(added)}")
     if skipped:
         click.echo(f"⊙ Already configured: {', '.join(skipped)}")
     if steering_written:
         click.echo(f"📝 Agent instructions written to: {', '.join(steering_written)}")
+    if hook_written:
+        click.echo("⚡ Auto-commit hook installed: every Claude Code message → Engram")
 
     if added:
         click.echo("\n→ Restart your editor and ask your agent: 'Set up Engram for my team'")
