@@ -241,14 +241,18 @@ async def handle_checkout(request: Request) -> JSONResponse:
     if not engram_id:
         return JSONResponse({"error": "engram_id required"}, status_code=400)
     if plan not in ("builder", "team", "scale"):
-        return JSONResponse({"error": "Invalid plan — must be builder, team, or scale"}, status_code=400)
+        return JSONResponse(
+            {"error": "Invalid plan — must be builder, team, or scale"}, status_code=400
+        )
     if not STRIPE_SECRET_KEY:
         return JSONResponse({"error": "Stripe not configured"}, status_code=503)
 
     price_id = STRIPE_PRICES.get(plan, "")
     if not price_id:
         return JSONResponse(
-            {"error": f"Stripe price for '{plan}' not configured (set STRIPE_PRICE_{plan.upper()})"},
+            {
+                "error": f"Stripe price for '{plan}' not configured (set STRIPE_PRICE_{plan.upper()})"
+            },
             status_code=503,
         )
 
