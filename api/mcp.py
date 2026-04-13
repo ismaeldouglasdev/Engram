@@ -391,19 +391,17 @@ async def _detect_conflicts(
     pool: Any,
     plan: str = "free",
 ) -> None:
-    """Narrative coherence detective.
+    """Narrative coherence detective with probabilistic forgetting.
 
-    Instead of pairwise contradiction checking, reads the full chronological
-    story of the workspace and identifies where an agent reading this history
-    would get confused. Catches:
+    Reads the chronological story of the workspace and identifies where
+    an agent would get confused. Uses FiFA-inspired forgetting:
 
-    - Reversals: did X → changed to Y → back to X without explanation
-    - Ambiguity: two active facts say different things about the same subject
-    - Stale info: old fact still active but clearly superseded by context
+    - Facts < 24h old: 60-80% forgotten (keep 20-40%)
+    - Facts 1-7 days old: 80-90% forgotten (keep 10-20%)
+    - Facts > 7 days old: 90-95% forgotten (keep 5-10%)
+    - Facts involved in conflicts survive at higher rates (2x per flag)
 
-    Inspired by Yu et al.'s consistency model (visibility + ordering),
-    Graphiti's bitemporal approach, and FiFA's finding that unverified
-    inferences are the primary noise source.
+    This focuses the detective on the signal, not the noise.
     """
     if not OPENAI_API_KEY:
         return
@@ -421,9 +419,37 @@ async def _detect_conflicts(
         if len(all_facts) < 2:
             return
 
-        # Build the chronological narrative
+        # ── Probabilistic forgetting (FiFA-inspired) ────────────────
+        # Recent noise drowns out signal. The detective forgets most
+        # recent facts but remembers facts that have been flagged in
+        # conflicts — those are the ones that matter.
+        from engram.forgetting import apply_forgetting
+
+        now = datetime.now(timezone.utc)
+
+        # Count how many conflicts each fact has been involved in
+        conflict_counts: dict[str, int] = {}
+        async with _safe(pool) as conn:
+            conflict_rows = await conn.fetch(
+                """SELECT fact_a_id, fact_b_id FROM conflicts
+                   WHERE workspace_id = $1""",
+                workspace_id,
+            )
+        for cr in conflict_rows:
+            conflict_counts[cr["fact_a_id"]] = conflict_counts.get(cr["fact_a_id"], 0) + 1
+            conflict_counts[cr["fact_b_id"]] = conflict_counts.get(cr["fact_b_id"], 0) + 1
+
+        # Apply forgetting curve — always keep the trigger fact
+        surviving_facts = apply_forgetting(
+            facts=[dict(row) for row in all_facts],
+            conflict_counts=conflict_counts,
+            now=now,
+            always_keep_ids={new_fact_id},
+        )
+
+        # Build the chronological narrative from surviving facts
         story_lines: list[dict] = []
-        for row in all_facts:
+        for row in surviving_facts:
             ts = (
                 row["committed_at"].strftime("%Y-%m-%d %H:%M") if row["committed_at"] else "unknown"
             )
