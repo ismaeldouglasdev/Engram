@@ -1873,21 +1873,25 @@ function renderConflicts() {
   el.innerHTML = sorted.map(c => {
     const fa = factMap[c.fact_a_id], fb = factMap[c.fact_b_id];
     const isOpen = c.status === 'open';
-    const statusClass = isOpen ? 'status-open' : 'status-resolved';
     const ts = c.detected_at ? new Date(c.detected_at).toLocaleString() : '';
+    const faContent = fa ? fa.content : (c.fact_a_content || 'Fact not found');
+    const fbContent = fb ? fb.content : (c.fact_b_content || 'Fact not found');
+    const faScope = fa ? fa.scope : (c.fact_a_scope || '?');
+    const fbScope = fb ? fb.scope : (c.fact_b_scope || '?');
     const faTime = fa && fa.committed_at ? new Date(fa.committed_at).toLocaleString() : '';
     const fbTime = fb && fb.committed_at ? new Date(fb.committed_at).toLocaleString() : '';
     return `<div class="conflict-card${isOpen ? '' : ' resolved'}">
       <div class="conflict-question">${c.explanation ? esc(c.explanation) : 'Conflicting information detected'}</div>
       ${isOpen ? `<div class="conflict-actions">
-        <button class="btn-yes" onclick="resolveConflict('${c.id}','yes')">Yes, still true</button>
-        <button class="btn-no" onclick="resolveConflict('${c.id}','no')">No, it changed</button>
+        <button class="btn-yes" onclick="resolveConflict('${c.id}','keep_a')">Keep fact A</button>
+        <button class="btn-yes" onclick="resolveConflict('${c.id}','keep_b')" style="background:rgba(96,165,250,0.1);border-color:rgba(96,165,250,0.2);color:#60a5fa;">Keep fact B</button>
+        <button class="btn-no" onclick="resolveConflict('${c.id}','dismiss')">Dismiss</button>
       </div>` : `<div class="conflict-resolved-note">Resolved · ${c.resolution_type || 'dismissed'}</div>`}
       <details class="conflict-details">
         <summary>View details</summary>
         <div class="conflict-facts">
-          <div class="conflict-fact"><div class="conflict-fact-label">${fa?esc(fa.scope):'?'} · ${faTime}</div>${fa ? esc(fa.content) : 'Fact not found'}</div>
-          <div class="conflict-fact"><div class="conflict-fact-label">${fb?esc(fb.scope):'?'} · ${fbTime}</div>${fb ? esc(fb.content) : 'Fact not found'}</div>
+          <div class="conflict-fact"><div class="conflict-fact-label">Fact A · ${esc(faScope)}${faTime ? ' · ' + faTime : ''}</div>${esc(faContent)}</div>
+          <div class="conflict-fact"><div class="conflict-fact-label">Fact B · ${esc(fbScope)}${fbTime ? ' · ' + fbTime : ''}</div>${esc(fbContent)}</div>
         </div>
         <div class="conflict-date">Detected ${ts}</div>
       </details>
@@ -1897,25 +1901,36 @@ function renderConflicts() {
 
 async function resolveConflict(conflictId, answer) {
   if (!CURRENT_WS) return;
-  const resolution = answer === 'yes' ? 'Confirmed: original fact is still correct' : 'Updated: newer information supersedes';
+  let resolution_type, resolution, winning_claim_id;
+  if (answer === 'keep_a') {
+    resolution_type = 'winner';
+    resolution = 'Fact A kept as correct via dashboard';
+    const c = WS_DATA && WS_DATA.conflicts.find(x => x.id === conflictId);
+    winning_claim_id = c ? c.fact_a_id : undefined;
+  } else if (answer === 'keep_b') {
+    resolution_type = 'winner';
+    resolution = 'Fact B kept as correct via dashboard';
+    const c = WS_DATA && WS_DATA.conflicts.find(x => x.id === conflictId);
+    winning_claim_id = c ? c.fact_b_id : undefined;
+  } else {
+    resolution_type = 'dismissed';
+    resolution = 'Dismissed as false positive via dashboard';
+  }
   try {
-    // Use the MCP endpoint to resolve
-    const r = await fetch('/mcp', {
+    const args = { conflict_id: conflictId, resolution_type, resolution };
+    if (winning_claim_id) args.winning_claim_id = winning_claim_id;
+    await fetch('/mcp', {
       method: 'POST', credentials: 'include',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
-        params: { name: 'engram_resolve', arguments: {
-          conflict_id: conflictId,
-          resolution_type: answer === 'yes' ? 'winner' : 'dismissed',
-          resolution: resolution,
-        }}
+        params: { name: 'engram_resolve', arguments: args }
       })
     });
     // Update local state
     if (WS_DATA) {
       const c = WS_DATA.conflicts.find(x => x.id === conflictId);
-      if (c) { c.status = 'resolved'; c.resolution_type = answer === 'yes' ? 'winner' : 'dismissed'; }
+      if (c) { c.status = 'resolved'; c.resolution_type = resolution_type; }
     }
     renderConflicts();
     renderDetail();
