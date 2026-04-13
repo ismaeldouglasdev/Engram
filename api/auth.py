@@ -651,7 +651,9 @@ async def handle_rename_workspace(request: Request) -> JSONResponse:
     if not display_name:
         return JSONResponse({"error": "display_name cannot be empty"}, status_code=400)
     if len(display_name) > 80:
-        return JSONResponse({"error": "display_name must be 80 characters or fewer"}, status_code=400)
+        return JSONResponse(
+            {"error": "display_name must be 80 characters or fewer"}, status_code=400
+        )
 
     try:
         pool = await _get_pool()
@@ -662,7 +664,9 @@ async def handle_rename_workspace(request: Request) -> JSONResponse:
                 engram_id,
             )
             if not owns:
-                return JSONResponse({"error": "Workspace not found or access denied"}, status_code=403)
+                return JSONResponse(
+                    {"error": "Workspace not found or access denied"}, status_code=403
+                )
             await conn.execute(
                 f"UPDATE {SCHEMA}.workspaces SET display_name = $1 WHERE engram_id = $2",
                 display_name,
