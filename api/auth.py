@@ -71,6 +71,11 @@ _AUTH_SCHEMA_STMTS = [
         pin_salt      TEXT NOT NULL,
         encrypted_key TEXT NOT NULL
     )""",
+    # Indexes — created after tables so IF NOT EXISTS is safe on re-boot
+    f"CREATE INDEX IF NOT EXISTS idx_uw_user_id ON {SCHEMA}.user_workspaces(user_id)",
+    f"CREATE INDEX IF NOT EXISTS idx_facts_ws ON {SCHEMA}.facts(workspace_id)",
+    f"CREATE INDEX IF NOT EXISTS idx_conflicts_ws ON {SCHEMA}.conflicts(workspace_id)",
+    f"CREATE INDEX IF NOT EXISTS idx_agents_ws ON {SCHEMA}.agents(workspace_id)",
 ]
 
 
@@ -366,7 +371,8 @@ async def handle_me(request: Request) -> JSONResponse:
             "user_id": user["id"],
             "email": user["email"],
             "workspaces": ws_list,
-        }
+        },
+        headers={"Cache-Control": "private, max-age=30"},
     )
 
 

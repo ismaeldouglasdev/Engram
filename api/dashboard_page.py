@@ -18,8 +18,8 @@ def _render_dashboard() -> str:
   <meta name="description" content="View and manage your team's shared memory — facts, conflicts, agents, and lineage.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.29.2/cytoscape.min.js"></script>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     :root {
@@ -1495,8 +1495,22 @@ function renderDetail() {
 }
 
 // ── Graph ───────────────────────────────────────────────────────────
-function renderGraph() {
+let _cyScript = null;
+function _loadCytoscape() {
+  if (typeof cytoscape !== 'undefined') return Promise.resolve();
+  if (_cyScript) return _cyScript;
+  _cyScript = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.29.2/cytoscape.min.js';
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  return _cyScript;
+}
+
+async function renderGraph() {
   if (!WS_DATA) return;
+  await _loadCytoscape();
   const { facts, conflicts } = WS_DATA;
   const els = [], sc = {}, PAL = ['#10b981','#06b6d4','#8b5cf6','#ec4899','#f59e0b','#22c55e','#3b82f6'];
   let pi = 0;
