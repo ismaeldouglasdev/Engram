@@ -2034,17 +2034,18 @@ class SQLiteStorage(BaseStorage):
         }
 
         c = await self.db.execute(
-            "UPDATE facts SET content = '[erased]', keywords = NULL, entities = NULL, "
+            "UPDATE facts SET content = '[gdpr:erased:' || id || ']', keywords = NULL, entities = NULL, "
             "embedding = NULL, engineer = '[redacted]', provenance = NULL, "
-            "valid_until = ?, memory_op = 'delete' "
+            "valid_until = COALESCE(valid_until, ?), memory_op = 'delete' "
             "WHERE agent_id = ? AND workspace_id = ?",
             (now, agent_id, self.workspace_id),
         )
         counts["facts_updated"] = c.rowcount
 
         c = await self.db.execute(
-            "UPDATE conflicts SET status = 'resolved', resolution_type = 'gdpr_erasure', "
-            "resolution = '[erased]', explanation = '[erased]', resolved_at = ? "
+            "UPDATE conflicts SET status = 'dismissed', resolution_type = 'gdpr_erasure', "
+            "resolution = '[redacted]', explanation = '[redacted]', resolved_at = ?, "
+            "suggested_resolution = NULL, suggestion_reasoning = NULL, suggested_winning_fact_id = NULL "
             "WHERE workspace_id = ? AND status = 'open' AND "
             "(fact_a_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?) "
             "OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))",
@@ -2053,7 +2054,8 @@ class SQLiteStorage(BaseStorage):
         counts["conflicts_closed"] = c.rowcount
 
         c = await self.db.execute(
-            "UPDATE conflicts SET explanation = '[erased]', resolution = '[erased]' "
+            "UPDATE conflicts SET explanation = '[redacted]', resolution = '[redacted]', "
+            "suggested_resolution = NULL, suggestion_reasoning = NULL, suggested_winning_fact_id = NULL "
             "WHERE workspace_id = ? AND status != 'open' AND "
             "(fact_a_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?) "
             "OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))",
@@ -2072,6 +2074,14 @@ class SQLiteStorage(BaseStorage):
             (agent_id, self.workspace_id),
         )
         counts["audit_rows_scrubbed"] = c.rowcount
+
+        c = await self.db.execute(
+            "UPDATE audit_log SET fact_id = NULL "
+            "WHERE workspace_id = ? AND fact_id IN "
+            "(SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?)",
+            (self.workspace_id, agent_id, self.workspace_id),
+        )
+        counts["audit_rows_scrubbed"] += c.rowcount
 
         c = await self.db.execute(
             "UPDATE agents SET engineer = '[redacted]' WHERE agent_id = ? AND workspace_id = ?",
