@@ -6,7 +6,8 @@
       "autoApprove": [
         "engram_status",
         "engram_join",
-        "engram_commit"
+        "engram_commit",
+        "engram_conflicts"
       ]
     }
   }
