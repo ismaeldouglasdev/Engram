@@ -424,6 +424,50 @@ class EngramEngine:
 
         return result
 
+    async def commit_batch(
+        self,
+        facts: list[dict[str, Any]],
+        scope: str = "general",
+        agent_id: str | None = None,
+        engineer: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Commit multiple facts in a single batch call.
+
+        More efficient than calling commit() multiple times.
+
+        Args:
+            facts: List of fact dicts with optional 'content', 'confidence', 'fact_type', 'provenance'
+            scope: Default scope for facts without explicit scope
+            agent_id: Agent identifier
+            engineer: Engineer identifier
+
+        Returns:
+            List of result dicts for each committed fact
+        """
+        results = []
+        for fact in facts:
+            content = fact.get("content", "")
+            if not content:
+                results.append({"error": "content is required", "success": False})
+                continue
+
+            try:
+                result = await self.commit(
+                    content=content,
+                    scope=fact.get("scope", scope),
+                    confidence=fact.get("confidence", 0.8),
+                    agent_id=agent_id,
+                    engineer=engineer,
+                    provenance=fact.get("provenance"),
+                    fact_type=fact.get("fact_type", "observation"),
+                    ttl_days=fact.get("ttl_days"),
+                    durability=fact.get("durability", "durable"),
+                )
+                results.append({"success": True, **result})
+            except Exception as e:
+                results.append({"success": False, "error": str(e)})
+
+        return results
     # Adding helper function estimate_conflict_risk.
     def _estimate_conflict_risk(self, content: str, scope: str) -> str:
         """
