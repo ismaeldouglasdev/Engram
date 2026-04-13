@@ -376,6 +376,26 @@ async def _detect_conflicts(
 # ── Tool implementations ─────────────────────────────────────────────
 
 
+async def _tool_debug_schema(pool: Any) -> dict:
+    """Debug: show what tables exist in the engram schema."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = $1",
+            SCHEMA,
+        )
+        tables = [r["table_name"] for r in rows]
+        search_path = await conn.fetchval("SHOW search_path")
+        current_schema = await conn.fetchval("SELECT current_schema()")
+    return {
+        "schema": SCHEMA,
+        "search_path": search_path,
+        "current_schema": current_schema,
+        "tables": tables,
+        "schema_version_applied": _schema_version_applied,
+        "schema_version_target": _SCHEMA_VERSION,
+    }
+
+
 async def _tool_status(workspace_id: str | None, pool: Any) -> dict:
     if workspace_id is None:
         return {
@@ -1105,6 +1125,8 @@ async def _handle_message(msg: dict, workspace_id: str | None) -> dict | None:
 
             if tool_name == "engram_status":
                 result = await _tool_status(workspace_id, pool)
+            elif tool_name == "debug_schema":
+                result = await _tool_debug_schema(pool)
             elif tool_name == "engram_init":
                 result = await _tool_init(
                     pool,
