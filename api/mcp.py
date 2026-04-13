@@ -367,7 +367,7 @@ async def _auth_workspace(request: Request) -> str | None:
         return None
 
 
-# ── Conflict detection (tier 0 — entity regex, no ML) ────────────────
+# ── Conflict detection ────────────────────────────────────────────────
 
 _NUM_RE = re.compile(
     r"\b(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|minutes?|hours?|days?|"
@@ -376,54 +376,194 @@ _NUM_RE = re.compile(
 )
 _ENTITY_RE = re.compile(r"\b([A-Z_]{3,})\b")
 
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+_CONFLICT_MODEL = "gpt-4o-mini"
+# ~4 chars per token; leave room for system prompt + new fact + response
+_BATCH_CHAR_LIMIT = 24000  # ~6k tokens of facts, fits in 8k window with overhead
+
 
 async def _detect_conflicts(
     new_fact_id: str, content: str, scope: str, workspace_id: str, pool: Any
 ) -> None:
-    """Tier-0 entity conflict detection. Runs inline, no ML."""
+    """Multi-tier conflict detection: Tier 0 (regex) + Tier 1 (LLM).
+
+    Tier 0 runs inline for instant cheap detection of numeric/entity conflicts.
+    Tier 1 sends the new fact against ALL active facts (batched into 8k-token
+    windows) to GPT-4o-mini to catch semantic contradictions like
+    "starts with B" vs "starts with C".
+    """
+    # ── Tier 0: regex entity/numeric detection (fast, inline) ────────
     try:
         new_nums = {m.group(0).lower() for m in _NUM_RE.finditer(content) if m.group(1)}
         new_ents = {m.group(1) for m in _ENTITY_RE.finditer(content)}
-        if not new_nums and not new_ents:
-            return
 
+        if new_nums or new_ents:
+            async with _safe(pool) as conn:
+                existing = await conn.fetch(
+                    """SELECT id, content FROM facts
+                       WHERE workspace_id = $1 AND scope = $2 AND valid_until IS NULL
+                         AND id != $3
+                       ORDER BY committed_at DESC LIMIT 30""",
+                    workspace_id,
+                    scope,
+                    new_fact_id,
+                )
+                for row in existing:
+                    old_content = row["content"]
+                    old_nums = {m.group(0).lower() for m in _NUM_RE.finditer(old_content) if m.group(1)}
+                    old_ents = {m.group(1) for m in _ENTITY_RE.finditer(old_content)}
+                    shared_ents = new_ents & old_ents
+                    conflicting_nums = new_nums ^ old_nums
+                    if shared_ents and conflicting_nums:
+                        cid = str(uuid.uuid4())
+                        explanation = (
+                            f"Entity overlap ({', '.join(list(shared_ents)[:3])}) "
+                            f"with different numeric values"
+                        )
+                        await conn.execute(
+                            """INSERT INTO conflicts (id, fact_a_id, fact_b_id, explanation,
+                                   severity, workspace_id)
+                               VALUES ($1, $2, $3, $4, 'medium', $5)
+                               ON CONFLICT DO NOTHING""",
+                            cid, new_fact_id, row["id"], explanation, workspace_id,
+                        )
+    except Exception as exc:
+        logger.warning("Tier 0 conflict detection failed: %s", exc)
+
+    # ── Tier 1: LLM semantic contradiction detection ─────────────────
+    if not OPENAI_API_KEY:
+        return  # No API key configured — skip LLM detection
+
+    try:
+        # Fetch ALL active facts for this workspace (not just same scope)
         async with _safe(pool) as conn:
-            existing = await conn.fetch(
-                """SELECT id, content FROM facts
-                   WHERE workspace_id = $1 AND scope = $2 AND valid_until IS NULL
-                     AND id != $3
-                   ORDER BY committed_at DESC LIMIT 30""",
+            all_facts = await conn.fetch(
+                """SELECT id, content, scope FROM facts
+                   WHERE workspace_id = $1 AND valid_until IS NULL AND id != $2
+                   ORDER BY committed_at DESC""",
                 workspace_id,
-                scope,
                 new_fact_id,
             )
-            for row in existing:
-                old_content = row["content"]
-                old_nums = {m.group(0).lower() for m in _NUM_RE.finditer(old_content) if m.group(1)}
-                old_ents = {m.group(1) for m in _ENTITY_RE.finditer(old_content)}
 
-                shared_ents = new_ents & old_ents
-                conflicting_nums = new_nums ^ old_nums  # symmetric diff
+        if not all_facts:
+            return
 
-                if shared_ents and conflicting_nums:
-                    cid = str(uuid.uuid4())
-                    explanation = (
-                        f"Entity overlap ({', '.join(list(shared_ents)[:3])}) "
-                        f"with different numeric values"
+        # Batch facts into chunks that fit the context window
+        batches: list[list[dict]] = []
+        current_batch: list[dict] = []
+        current_chars = 0
+
+        for row in all_facts:
+            fact_text = f"[{row['id'][:8]}] ({row['scope']}) {row['content']}"
+            fact_len = len(fact_text)
+            if current_chars + fact_len > _BATCH_CHAR_LIMIT and current_batch:
+                batches.append(current_batch)
+                current_batch = []
+                current_chars = 0
+            current_batch.append({"id": row["id"], "text": fact_text, "content": row["content"]})
+            current_chars += fact_len
+
+        if current_batch:
+            batches.append(current_batch)
+
+        # Process each batch through the LLM
+        import asyncio as _aio
+
+        async def _check_batch(batch: list[dict]) -> list[dict]:
+            """Ask the LLM to find contradictions between the new fact and a batch."""
+            facts_block = "\n".join(f"- {f['text']}" for f in batch)
+            prompt = (
+                "You are a contradiction detector. Given a NEW FACT and a list of EXISTING FACTS, "
+                "identify any existing facts that DIRECTLY CONTRADICT the new fact. "
+                "Two facts contradict if they make incompatible claims about the same subject.\n\n"
+                f"NEW FACT: {content}\n\n"
+                f"EXISTING FACTS:\n{facts_block}\n\n"
+                "Respond with ONLY a JSON array of objects for each contradiction found:\n"
+                '[{"fact_id": "<first 8 chars of ID>", "explanation": "<brief explanation>", "severity": "high|medium|low"}]\n\n'
+                "If no contradictions, respond with: []\n"
+                "Be precise. Only flag genuine contradictions, not merely different topics."
+            )
+
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {OPENAI_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": _CONFLICT_MODEL,
+                            "messages": [
+                                {"role": "system", "content": "You detect contradictions between facts. Respond only with valid JSON arrays."},
+                                {"role": "user", "content": prompt},
+                            ],
+                            "temperature": 0,
+                            "max_tokens": 1024,
+                        },
                     )
+                    if resp.status_code != 200:
+                        logger.warning("OpenAI API returned %d: %s", resp.status_code, resp.text[:200])
+                        return []
+                    data = resp.json()
+                    raw = data["choices"][0]["message"]["content"].strip()
+                    # Parse JSON — handle markdown code fences
+                    if raw.startswith("```"):
+                        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+                    return json.loads(raw)
+            except Exception as exc:
+                logger.warning("LLM conflict batch failed: %s", exc)
+                return []
+
+        # Run all batches concurrently
+        results = await _aio.gather(*[_check_batch(b) for b in batches])
+
+        # Build a lookup from short ID to full ID
+        id_lookup: dict[str, str] = {}
+        for row in all_facts:
+            id_lookup[row["id"][:8]] = row["id"]
+
+        # Insert detected conflicts
+        async with _safe(pool) as conn:
+            for batch_results in results:
+                for conflict in batch_results:
+                    if not isinstance(conflict, dict):
+                        continue
+                    short_id = conflict.get("fact_id", "")
+                    full_id = id_lookup.get(short_id)
+                    if not full_id:
+                        continue
+                    # Check if conflict already exists
+                    existing = await conn.fetchrow(
+                        """SELECT 1 FROM conflicts
+                           WHERE workspace_id = $1
+                             AND ((fact_a_id = $2 AND fact_b_id = $3)
+                               OR (fact_a_id = $3 AND fact_b_id = $2))""",
+                        workspace_id, new_fact_id, full_id,
+                    )
+                    if existing:
+                        continue
+                    cid = str(uuid.uuid4())
+                    severity = conflict.get("severity", "medium")
+                    if severity not in ("high", "medium", "low"):
+                        severity = "medium"
+                    explanation = conflict.get("explanation", "Semantic contradiction detected by LLM")
                     await conn.execute(
                         """INSERT INTO conflicts (id, fact_a_id, fact_b_id, explanation,
                                severity, workspace_id)
-                           VALUES ($1, $2, $3, $4, 'medium', $5)
+                           VALUES ($1, $2, $3, $4, $5, $6)
                            ON CONFLICT DO NOTHING""",
-                        cid,
-                        new_fact_id,
-                        row["id"],
-                        explanation,
-                        workspace_id,
+                        cid, new_fact_id, full_id,
+                        f"[LLM] {explanation}", severity, workspace_id,
                     )
+                    logger.info(
+                        "LLM conflict detected: %s vs %s — %s",
+                        new_fact_id[:8], full_id[:8], explanation,
+                    )
+
     except Exception as exc:
-        logger.warning("Conflict detection failed: %s", exc)
+        logger.warning("Tier 1 LLM conflict detection failed: %s", exc)
 
 
 # ── Tool implementations ─────────────────────────────────────────────
