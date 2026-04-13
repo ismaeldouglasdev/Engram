@@ -142,7 +142,7 @@ Every commit triggers a 3-step detection pipeline. All steps run on every fact â
 |---|---|---|---|
 | 1 | Regex entity/numeric matching | "rate limit is 1000" vs "rate limit is 2000" | Instant |
 | 2 | Numeric + cross-scope rules | Same entity with different values across scopes | Instant |
-| 3 | LLM semantic scan (GPT-4o-mini) | "We use Postgres for the queue" vs "We use Redis for the queue" | ~2-8s |
+| 3 | LLM semantic scan | "We use Postgres for the queue" vs "We use Redis for the queue" | ~2-8s |
 
 ---
 
