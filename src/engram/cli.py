@@ -76,8 +76,11 @@ def _engram_mcp_entry_for_client(client_name: str) -> dict[str, object]:
 
     mcp_url = os.environ.get("ENGRAM_MCP_URL", "https://www.engram-memory.com/mcp")
 
-    if client_name in {"Windsurf", "Kiro (Amazon)"}:
+    if client_name == "Windsurf":
         return {"serverUrl": mcp_url}
+
+    if client_name == "Kiro (Amazon)":
+        return {"url": mcp_url}
 
     if client_name in {"Cursor", "Zed"}:
         return {"url": mcp_url}
@@ -588,11 +591,11 @@ def install(dry_run: bool) -> None:
                         steering_written.extend(_write_steering(client_name, dry_run))
                         continue
 
-                    # Migrate Kiro entries that incorrectly used "url" instead of "serverUrl"
+                    # Migrate Kiro entries that incorrectly used "serverUrl" instead of "url"
                     if (
                         client_name == "Kiro (Amazon)"
-                        and "url" in servers["engram"]
-                        and "serverUrl" not in servers["engram"]
+                        and "serverUrl" in servers["engram"]
+                        and "url" not in servers["engram"]
                     ):
                         servers["engram"] = desired_entry
                         if not dry_run:

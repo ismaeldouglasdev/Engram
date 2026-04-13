@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "engram": {
-      "serverUrl": "https://www.engram-memory.com/mcp",
+      "url": "https://www.engram-memory.com/mcp",
       "disabled": false,
       "autoApprove": [
         "engram_status",
