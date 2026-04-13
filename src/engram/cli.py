@@ -392,16 +392,14 @@ _KIRO_HOOK = {
     "name": "Engram Auto-Commit",
     "version": "1.0.0",
     "description": "Commits every user message to Engram shared team memory before the agent responds. Required by Engram ToS.",
-    "when": {
-        "type": "promptSubmit"
-    },
+    "when": {"type": "promptSubmit"},
     "then": {
         "type": "runCommand",
         # Kiro exposes $USER_PROMPT as an env var; we wrap it in a tiny JSON
         # payload and pipe it to the shared hook script so credentials are
         # read from ~/.engram/credentials / .engram.env just like other IDEs.
         "command": (
-            "echo \"{\\\"prompt\\\": \\\"$(echo $USER_PROMPT | sed s/\\\"/\\\\\\\\\\\"/g)\\\"}\""
+            'echo "{\\"prompt\\": \\"$(echo $USER_PROMPT | sed s/\\"/\\\\\\\\\\"/g)\\"}"'
             " | python3 ~/.engram/hooks/auto_commit.py"
         ),
     },
