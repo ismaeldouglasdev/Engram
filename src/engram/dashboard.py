@@ -9,7 +9,6 @@ point-in-time, expiring facts.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -144,10 +143,13 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         )
 
     async def conflict_queue(request: Request) -> HTMLResponse:
-        scope = request.query_params.get("scope")
+        scope = request.query_params.get("scope") or None
         status = request.query_params.get("status", "open")
-        conflicts = await storage.get_conflicts(scope=scope, status=status)
-
+        if engine is None:
+            return HTMLResponse(_render_conflicts_page([], stats={"open": 0, "resolved": 0}))
+        # engine.get_conflicts() runs _sync_conflict_scan before querying —
+        # this is what detects conflicts in the first place.
+        conflicts = await engine.get_conflicts(scope=scope, status=status)
         stats = {
             "open": await storage.count_conflicts("open"),
             "resolved": await storage.count_conflicts("resolved"),
@@ -877,234 +879,174 @@ def _render_facts_table(
 
 
 def _render_conflicts_page(conflicts: list[dict], stats: dict | None = None) -> str:
-    cards = "".join(_render_conflict_card(c) for c in conflicts)
-    if not cards:
-        cards = '<p style="color:#9ab89a;font-size:0.85rem;padding:1rem 0;">No conflicts found.</p>'
-
+    """Render the Conflicts tab. conflicts is the engine.get_conflicts() result."""
     open_count = (
-        sum(1 for c in conflicts if c.get("status") == "open")
-        if stats is None
-        else stats.get("open", 0)
+        stats.get("open", 0) if stats else sum(1 for c in conflicts if c.get("status") == "open")
     )
     resolved_count = (
-        sum(1 for c in conflicts if c.get("status") == "resolved")
-        if stats is None
-        else stats.get("resolved", 0)
+        stats.get("resolved", 0)
+        if stats
+        else sum(1 for c in conflicts if c.get("status") == "resolved")
     )
+
+    if not conflicts:
+        empty = (
+            '<div style="text-align:center;padding:3rem 1rem;color:#6b7280;">'
+            '<div style="font-size:2rem;margin-bottom:0.5rem;">✓</div>'
+            '<div style="font-size:1rem;font-weight:500;">No confusions detected — your agents are aligned.</div>'
+            "</div>"
+        )
+        cards_html = empty
+    else:
+        cards_html = "".join(_render_conflict_card(c) for c in conflicts)
+
     body = f"""
-    <h2>Conflict Queue</h2>
-    <div class="stats">
-      <div class="stat stat-warn">
-        <div class="stat-value">{open_count}</div>
-        <div class="stat-label">Open</div>
-      </div>
-      <div class="stat stat-ok">
-        <div class="stat-value">{resolved_count}</div>
-        <div class="stat-label">Resolved</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+      <h2 style="margin:0;">Conflicts</h2>
+      <div style="display:flex;gap:0.75rem;">
+        <span style="background:#fef3c7;color:#92400e;padding:0.25rem 0.75rem;border-radius:9999px;font-size:0.8rem;font-weight:600;">{open_count} open</span>
+        <span style="background:#d1fae5;color:#065f46;padding:0.25rem 0.75rem;border-radius:9999px;font-size:0.8rem;">{resolved_count} resolved</span>
       </div>
     </div>
-    <div class="filter-bar">
+    <div style="margin-bottom:1rem;">
       <form method="get" action="/dashboard/conflicts" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-        <input name="scope" placeholder="Scope filter" value="">
-        <select name="status">
+        <input name="scope" placeholder="Filter by scope…" style="padding:0.35rem 0.6rem;border:1px solid #374151;background:#1f2937;color:#f9fafb;border-radius:6px;font-size:0.85rem;">
+        <select name="status" style="padding:0.35rem 0.6rem;border:1px solid #374151;background:#1f2937;color:#f9fafb;border-radius:6px;font-size:0.85rem;">
           <option value="open">Open</option>
           <option value="resolved">Resolved</option>
           <option value="dismissed">Dismissed</option>
           <option value="all">All</option>
         </select>
-        <button type="submit">Filter</button>
+        <button type="submit" style="padding:0.35rem 0.9rem;background:#4ade80;color:#052e16;border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer;">Filter</button>
       </form>
     </div>
-    <div class="conflict-cards">{cards}</div>
-    <p class="count-note">{len(conflicts)} conflict(s)</p>
-    <div class="keyboard-hints">
-      <span><kbd>j</kbd> <kbd>k</kbd> navigate</span>
-      <span><kbd>a</kbd> accept fact A</span>
-      <span><kbd>b</kbd> accept fact B</span>
-      <span><kbd>s</kbd> skip</span>
-    </div>"""
+    <div>{cards_html}</div>"""
+
     return _dash_layout("Conflicts", body, active="conflicts", workspace_name=_get_workspace_name())
 
 
 def _render_conflict_card(c: dict) -> str:
-    """Render one conflict as a self-contained card (also used for HTMX swap targets)."""
-    cid = c.get("id", "")
-    sev = c.get("severity", "low")
-    status = c.get("status", "open")
-    auto = c.get("auto_resolved", 0)
-    detected = c.get("detected_at", "")[:19]
-
-    # Header badges
-    sev_badge = f'<span class="badge badge-{sev}">{sev}</span>'
-    if auto:
-        status_badge = '<span class="badge badge-auto">auto-resolved</span>'
-    else:
-        status_badge = f'<span class="badge badge-{status}">{status}</span>'
-    tier_tag = f'<span class="tier-tag">{_esc(c.get("detection_tier", ""))}</span>'
-
-    # Escalation countdown (only for open conflicts)
-    escalation_html = ""
-    if status == "open":
-        try:
-            detected_dt = datetime.fromisoformat(c["detected_at"])
-            now_dt = datetime.now(timezone.utc)
-            hours_elapsed = (now_dt - detected_dt).total_seconds() / 3600
-            hours_remaining = 72 - hours_elapsed
-            if hours_remaining > 0:
-                escalation_html = (
-                    f'<span class="escalation-note">auto-escalates in {hours_remaining:.0f}h</span>'
-                )
-            else:
-                escalation_html = (
-                    '<span class="escalation-note" style="color:#dc2626;">escalation overdue</span>'
-                )
-        except Exception:
-            pass
-
-    # Fact boxes
-    def _fact_box(content: str, scope: str, agent: str, confidence: float) -> str:
-        return (
-            f'<div class="fact-box">'
-            f'<div class="fact-content">{_esc(content)}</div>'
-            f'<div class="fact-meta">'
-            f"scope: {_esc(scope)} &middot; "
-            f"conf: {confidence:.2f} &middot; "
-            f"agent: {_esc(agent)}"
-            f"</div></div>"
-        )
-
-    fact_a_box = _fact_box(
-        c.get("fact_a_content", ""),
-        c.get("fact_a_scope", ""),
-        c.get("fact_a_agent", ""),
-        float(c.get("fact_a_confidence") or 0),
-    )
-    fact_b_box = _fact_box(
-        c.get("fact_b_content", ""),
-        c.get("fact_b_scope", ""),
-        c.get("fact_b_agent", ""),
-        float(c.get("fact_b_confidence") or 0),
-    )
-
-    explanation = c.get("explanation", "")
-
-    # Create a human-readable conflict summary
-    tier = c.get("detection_tier", "")
-    summary_html = ""
-    if tier == "tier0_entity" and explanation:
-        # Extract entity name and values for cleaner display
-        import re
-
-        match = re.search(
-            r"Entity '([^']+)' has conflicting values: '([^']+)' vs '([^']+)'", explanation
-        )
-        if match:
-            entity, val_a, val_b = match.groups()
-            summary_html = (
-                f'<div class="conflict-summary"><strong>{entity}</strong>: {val_a} ⟷ {val_b}</div>'
-            )
-    elif tier == "tier1_nli" and explanation:
-        # Clean up NLI explanation
-        match = re.search(
-            r'Semantic contradiction.*?:\s*"?([^"]+)"?\s*vs\s*"?([^"]+)"?', explanation
-        )
-        if match:
-            content_a, content_b = match.groups()
-            summary_html = f'<div class="conflict-summary">Conflicting claims: <em>{content_a[:50]}...</em> vs <em>{content_b[:50]}...</em></div>'
-
-    expl_html = (
-        f'<div class="conflict-explanation">{_esc(explanation)}</div>' if explanation else ""
-    )
-
-    # Suggestion section
-    suggestion_html = ""
-    suggested_type = c.get("suggested_resolution_type", "")
-    suggested_text = c.get("suggested_resolution", "")
-    reasoning = c.get("suggestion_reasoning", "")
-
-    if suggested_text and status == "open":
-        type_badge = f'<span class="badge badge-low">{_esc(suggested_type)}</span>'
+    """Render one conflict card. Works with both storage rows and engine.get_conflicts() dicts."""
+    # Normalise: engine returns nested fact_a/fact_b dicts; storage rows are flat.
+    if "fact_a" in c:
+        fact_a = c["fact_a"]
+        fact_b = c["fact_b"]
+        cid = c.get("conflict_id", "")
+        explanation = c.get("explanation", "")
+        status = c.get("status", "open")
+        severity = c.get("severity", "high")
+        detected = (c.get("detected_at") or "")[:16]
+        resolution = c.get("resolution") or ""
+        resolution_type = c.get("resolution_type") or ""
+        suggested_text = c.get("suggested_resolution") or ""
+        suggested_type = c.get("suggested_resolution_type") or ""
         winning_id = c.get("suggested_winning_fact_id") or ""
-        winning_label = ""
-        if suggested_type == "winner" and winning_id:
-            if winning_id == c.get("fact_a_id"):
-                winning_label = " · keep Fact A"
-            elif winning_id == c.get("fact_b_id"):
-                winning_label = " · keep Fact B"
+        reasoning = c.get("suggestion_reasoning") or ""
+        fact_a_id = fact_a.get("fact_id", "")
+        fact_b_id = fact_b.get("fact_id", "")
+    else:
+        fact_a = {
+            "content": c.get("fact_a_content", ""),
+            "scope": c.get("fact_a_scope", ""),
+            "agent_id": c.get("fact_a_agent", ""),
+            "confidence": c.get("fact_a_confidence", 0),
+        }
+        fact_b = {
+            "content": c.get("fact_b_content", ""),
+            "scope": c.get("fact_b_scope", ""),
+            "agent_id": c.get("fact_b_agent", ""),
+            "confidence": c.get("fact_b_confidence", 0),
+        }
+        cid = c.get("id", "")
+        explanation = c.get("explanation", "")
+        status = c.get("status", "open")
+        severity = c.get("severity", "high")
+        detected = (c.get("detected_at") or "")[:16]
+        resolution = c.get("resolution") or ""
+        resolution_type = c.get("resolution_type") or ""
+        suggested_text = c.get("suggested_resolution") or ""
+        suggested_type = c.get("suggested_resolution_type") or ""
+        winning_id = c.get("suggested_winning_fact_id") or ""
+        reasoning = c.get("suggestion_reasoning") or ""
+        fact_a_id = c.get("fact_a_id", "")
+        fact_b_id = c.get("fact_b_id", "")
 
-        approve_btn = (
-            f'<button class="btn-approve" '
+    sev_color = {"high": "#dc2626", "medium": "#d97706", "low": "#6b7280"}.get(severity, "#6b7280")
+
+    def _fact_box(f: dict, label: str) -> str:
+        content = _esc(str(f.get("content") or ""))
+        scope = _esc(str(f.get("scope") or ""))
+        agent = _esc(str(f.get("agent_id") or ""))
+        return (
+            f'<div style="flex:1;background:#111827;border:1px solid #374151;border-radius:8px;padding:0.85rem;">'
+            f'<div style="font-size:0.7rem;font-weight:600;color:#6b7280;margin-bottom:0.4rem;text-transform:uppercase;">{label}</div>'
+            f'<div style="color:#f9fafb;font-size:0.88rem;line-height:1.5;margin-bottom:0.5rem;">{content}</div>'
+            f'<div style="font-size:0.75rem;color:#6b7280;">scope: {scope} · agent: {agent}</div>'
+            f"</div>"
+        )
+
+    # Actions
+    actions_html = ""
+    if status == "open":
+        keep_a = (
+            f'<button style="padding:0.3rem 0.7rem;background:#1f2937;border:1px solid #4ade80;color:#4ade80;border-radius:6px;font-size:0.8rem;cursor:pointer;" '
             f'hx-post="/dashboard/conflicts/{_esc(cid)}/approve" '
-            f'hx-target="#conflict-{_esc(cid)}" '
-            f'hx-swap="outerHTML" '
-            f'hx-indicator="#conflict-{_esc(cid)}">'
-            f"Approve{_esc(winning_label)}</button>"
+            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Keep fact A</button>'
         )
-        dismiss_btn = (
-            f'<button class="btn-dismiss" '
+        keep_b = (
+            f'<button style="padding:0.3rem 0.7rem;background:#1f2937;border:1px solid #4ade80;color:#4ade80;border-radius:6px;font-size:0.8rem;cursor:pointer;" '
+            f'hx-post="/dashboard/conflicts/{_esc(cid)}/approve" '
+            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Keep fact B</button>'
+        )
+        dismiss = (
+            f'<button style="padding:0.3rem 0.7rem;background:#1f2937;border:1px solid #6b7280;color:#9ca3af;border-radius:6px;font-size:0.8rem;cursor:pointer;" '
             f'hx-post="/dashboard/conflicts/{_esc(cid)}/dismiss" '
-            f'hx-target="#conflict-{_esc(cid)}" '
-            f'hx-swap="outerHTML">'
-            f"Dismiss</button>"
+            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Dismiss</button>'
         )
-        suggestion_html = (
-            f'<div class="suggestion-box">'
-            f'<div class="suggestion-header">'
-            f"Suggested Resolution {type_badge}</div>"
-            f'<div class="suggestion-text">{_esc(suggested_text)}</div>'
-            f'<div class="suggestion-reasoning">Reasoning: {_esc(reasoning)}</div>'
-            f'<div class="suggestion-actions">{approve_btn}{dismiss_btn}</div>'
-            f"</div>"
-        )
-    elif status == "open" and not suggested_text:
-        # No suggestion yet — show a dismiss-only button
-        dismiss_btn = (
-            f'<button class="btn-dismiss" '
-            f'hx-post="/dashboard/conflicts/{_esc(cid)}/dismiss" '
-            f'hx-target="#conflict-{_esc(cid)}" '
-            f'hx-swap="outerHTML">'
-            f"Dismiss</button>"
-        )
-        suggestion_html = (
-            f'<div class="suggestion-box" style="background:#f7fdf7;">'
-            f'<div class="suggestion-header" style="color:#9ab89a;">'
-            f"Suggestion pending...</div>"
-            f'<div class="suggestion-actions" style="margin-top:0.5rem;">{dismiss_btn}</div>'
-            f"</div>"
-        )
-
-    # Resolution note (for resolved/dismissed/auto-resolved)
-    resolution_html = ""
-    if status != "open" or auto:
-        res_text = c.get("resolution", "")
-        res_type = c.get("resolution_type", "")
-        res_by = c.get("resolved_by", "")
-        res_at = (c.get("resolved_at") or "")[:19]
-        if res_text:
-            auto_note = " (auto)" if auto else ""
-            resolution_html = (
-                f'<div class="resolution-note">'
-                f"Resolved{auto_note} as <strong>{_esc(res_type)}</strong>"
-                f" by {_esc(res_by)} at {_esc(res_at)}: {_esc(res_text)}"
-                f"</div>"
+        if suggested_text:
+            winning_label = ""
+            if winning_id == fact_a_id:
+                winning_label = " · keep Fact A"
+            elif winning_id == fact_b_id:
+                winning_label = " · keep Fact B"
+            suggestion_section = (
+                f'<div style="background:#1a2e1a;border:1px solid #166534;border-radius:6px;padding:0.75rem;margin-top:0.75rem;font-size:0.82rem;">'
+                f'<div style="color:#86efac;font-weight:600;margin-bottom:0.25rem;">Suggested: {_esc(suggested_type)}{_esc(winning_label)}</div>'
+                f'<div style="color:#d1fae5;margin-bottom:0.5rem;">{_esc(suggested_text)}</div>'
+                f'<div style="color:#6b7280;font-size:0.75rem;margin-bottom:0.5rem;">{_esc(reasoning)}</div>'
+                f'<div style="display:flex;gap:0.5rem;">'
+                f'<button style="padding:0.3rem 0.7rem;background:#166534;border:none;color:#d1fae5;border-radius:6px;font-size:0.8rem;cursor:pointer;" '
+                f'hx-post="/dashboard/conflicts/{_esc(cid)}/approve" '
+                f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Approve</button>'
+                f"{dismiss}</div></div>"
             )
+        else:
+            suggestion_section = ""
+        actions_html = (
+            f'<div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">'
+            f"{keep_a}{keep_b}{dismiss}</div>"
+            f"{suggestion_section}"
+        )
+    elif resolution:
+        actions_html = (
+            f'<div style="margin-top:0.5rem;font-size:0.8rem;color:#6b7280;">'
+            f"Resolved as <strong style='color:#9ca3af;'>{_esc(resolution_type)}</strong>: {_esc(resolution)}"
+            f"</div>"
+        )
 
-    card_cls = "conflict-card auto-resolved" if auto else "conflict-card"
     return (
-        f'<div class="{card_cls}" id="conflict-{_esc(cid)}">'
-        f'<div class="conflict-header">'
-        f"{sev_badge}{status_badge}{tier_tag}"
-        f'<span class="conflict-id">{_esc(cid[:12])}...</span>'
-        f'<span style="font-size:0.7rem;color:#9ab89a;">{_esc(detected)}</span>'
-        f"{escalation_html}"
+        f'<div id="conflict-{_esc(cid)}" style="background:#161f16;border:1px solid {sev_color}33;'
+        f'border-left:3px solid {sev_color};border-radius:8px;padding:1rem;margin-bottom:1rem;">'
+        f'<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap;">'
+        f'<span style="background:{sev_color}22;color:{sev_color};padding:0.15rem 0.5rem;border-radius:4px;font-size:0.72rem;font-weight:600;">{severity}</span>'
+        f'<span style="color:#6b7280;font-size:0.72rem;">{_esc(detected)}</span>'
+        f'<span style="color:#6b7280;font-size:0.72rem;margin-left:auto;">{_esc(status)}</span>'
         f"</div>"
-        f'<div class="conflict-facts">{fact_a_box}'
-        f'<div class="vs-divider">vs</div>'
-        f"{fact_b_box}</div>"
-        f"{summary_html}"
-        f"{expl_html}"
-        f"{suggestion_html}"
-        f"{resolution_html}"
+        f'<div style="display:flex;gap:0.75rem;flex-wrap:wrap;">{_fact_box(fact_a, "Fact A")}'
+        f'<div style="display:flex;align-items:center;font-size:0.9rem;font-weight:700;color:#6b7280;padding:0 0.25rem;">vs</div>'
+        f"{_fact_box(fact_b, 'Fact B')}</div>"
+        f'<div style="margin-top:0.6rem;font-size:0.8rem;color:#9ca3af;">{_esc(explanation)}</div>'
+        f"{actions_html}"
         f"</div>"
     )
 
