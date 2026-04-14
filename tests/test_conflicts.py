@@ -46,13 +46,13 @@ async def test_direct_numeric_contradiction_raises_conflict(engine: EngramEngine
 async def test_same_entity_different_value_produces_conflict(engine: EngramEngine):
     """Two facts naming the same config entity with different values are flagged as conflicting."""
     await engine.commit(
-        content="Max database connections is set to 50",
+        content="Max database connections is 50 connections",
         scope="conflicts",
         confidence=0.85,
         agent_id="agent-a",
     )
     await engine.commit(
-        content="Max database connections is set to 200",
+        content="Max database connections is 200 connections",
         scope="conflicts",
         confidence=0.85,
         agent_id="agent-b",

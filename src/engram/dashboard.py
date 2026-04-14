@@ -147,8 +147,6 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         status = request.query_params.get("status", "open")
         if engine is None:
             return HTMLResponse(_render_conflicts_page([], stats={"open": 0, "resolved": 0}))
-        # engine.get_conflicts() runs _sync_conflict_scan before querying —
-        # this is what detects conflicts in the first place.
         conflicts = await engine.get_conflicts(scope=scope, status=status)
         stats = {
             "open": await storage.count_conflicts("open"),
@@ -157,12 +155,10 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         return HTMLResponse(_render_conflicts_page(conflicts, stats=stats))
 
     async def approve_suggestion(request: Request) -> Response:
-        """HTMX endpoint: approve the LLM-suggested resolution for a conflict."""
+        """HTMX: approve the LLM-suggested resolution for a conflict."""
         conflict_id = request.path_params["conflict_id"]
         if engine is None:
-            return HTMLResponse(
-                '<p style="color:#dc2626">Engine not available</p>', status_code=503
-            )
+            return HTMLResponse('<p style="color:#dc2626">Engine not available</p>', status_code=503)
         conflict = await storage.get_conflict_by_id(conflict_id)
         if not conflict:
             return HTMLResponse('<p style="color:#dc2626">Conflict not found</p>', status_code=404)
@@ -190,12 +186,10 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         return HTMLResponse(_render_conflict_card(updated or conflict))
 
     async def dismiss_conflict(request: Request) -> Response:
-        """HTMX endpoint: dismiss a conflict as a false positive."""
+        """HTMX: dismiss a conflict as a false positive."""
         conflict_id = request.path_params["conflict_id"]
         if engine is None:
-            return HTMLResponse(
-                '<p style="color:#dc2626">Engine not available</p>', status_code=503
-            )
+            return HTMLResponse('<p style="color:#dc2626">Engine not available</p>', status_code=503)
         conflict = await storage.get_conflict_by_id(conflict_id)
         if not conflict or conflict["status"] != "open":
             full = await storage.get_conflict_with_facts(conflict_id)
@@ -879,55 +873,51 @@ def _render_facts_table(
 
 
 def _render_conflicts_page(conflicts: list[dict], stats: dict | None = None) -> str:
-    """Render the Conflicts tab. conflicts is the engine.get_conflicts() result."""
-    open_count = (
-        stats.get("open", 0) if stats else sum(1 for c in conflicts if c.get("status") == "open")
-    )
-    resolved_count = (
-        stats.get("resolved", 0)
-        if stats
-        else sum(1 for c in conflicts if c.get("status") == "resolved")
-    )
+    """Render the Conflicts tab."""
+    open_count = stats.get("open", 0) if stats else sum(1 for c in conflicts if c.get("status") == "open")
+    resolved_count = stats.get("resolved", 0) if stats else sum(1 for c in conflicts if c.get("status") == "resolved")
 
     if not conflicts:
-        empty = (
-            '<div style="text-align:center;padding:3rem 1rem;color:#6b7280;">'
-            '<div style="font-size:2rem;margin-bottom:0.5rem;">✓</div>'
-            '<div style="font-size:1rem;font-weight:500;">No confusions detected — your agents are aligned.</div>'
+        empty_html = (
+            '<div style="text-align:center;padding:4rem 1rem;color:#5a8a5a;">'
+            '<div style="font-size:2.5rem;margin-bottom:0.75rem;">✓</div>'
+            '<div style="font-size:1rem;font-weight:600;color:#1a3a1a;">No conflicts detected</div>'
+            '<div style="font-size:0.85rem;margin-top:0.4rem;">Your agents are aligned.</div>'
             "</div>"
         )
-        cards_html = empty
+        cards_html = empty_html
     else:
-        cards_html = "".join(_render_conflict_card(c) for c in conflicts)
+        cards_html = '<div class="conflict-cards">' + "".join(_render_conflict_card(c) for c in conflicts) + "</div>"
+
+    filter_form = f"""
+    <form method="get" action="/dashboard/conflicts" class="filter-bar">
+      <input name="scope" placeholder="Filter by scope…" value="">
+      <select name="status">
+        <option value="open">Open</option>
+        <option value="resolved">Resolved</option>
+        <option value="dismissed">Dismissed</option>
+        <option value="all">All</option>
+      </select>
+      <button type="submit">Filter</button>
+    </form>"""
 
     body = f"""
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
-      <h2 style="margin:0;">Conflicts</h2>
-      <div style="display:flex;gap:0.75rem;">
-        <span style="background:#fef3c7;color:#92400e;padding:0.25rem 0.75rem;border-radius:9999px;font-size:0.8rem;font-weight:600;">{open_count} open</span>
-        <span style="background:#d1fae5;color:#065f46;padding:0.25rem 0.75rem;border-radius:9999px;font-size:0.8rem;">{resolved_count} resolved</span>
+    <div class="dash-header">
+      <div class="dash-title"><h2 style="margin:0;">Conflicts</h2></div>
+      <div style="display:flex;gap:0.5rem;">
+        <span class="badge badge-open">{open_count} open</span>
+        <span class="badge badge-resolved">{resolved_count} resolved</span>
       </div>
     </div>
-    <div style="margin-bottom:1rem;">
-      <form method="get" action="/dashboard/conflicts" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-        <input name="scope" placeholder="Filter by scope…" style="padding:0.35rem 0.6rem;border:1px solid #374151;background:#1f2937;color:#f9fafb;border-radius:6px;font-size:0.85rem;">
-        <select name="status" style="padding:0.35rem 0.6rem;border:1px solid #374151;background:#1f2937;color:#f9fafb;border-radius:6px;font-size:0.85rem;">
-          <option value="open">Open</option>
-          <option value="resolved">Resolved</option>
-          <option value="dismissed">Dismissed</option>
-          <option value="all">All</option>
-        </select>
-        <button type="submit" style="padding:0.35rem 0.9rem;background:#4ade80;color:#052e16;border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer;">Filter</button>
-      </form>
-    </div>
-    <div>{cards_html}</div>"""
+    {filter_form}
+    {cards_html}"""
 
     return _dash_layout("Conflicts", body, active="conflicts", workspace_name=_get_workspace_name())
 
 
 def _render_conflict_card(c: dict) -> str:
-    """Render one conflict card. Works with both storage rows and engine.get_conflicts() dicts."""
-    # Normalise: engine returns nested fact_a/fact_b dicts; storage rows are flat.
+    """Render one conflict card. Handles both engine dicts and flat storage rows."""
+    # Normalise nested vs flat shapes
     if "fact_a" in c:
         fact_a = c["fact_a"]
         fact_b = c["fact_b"]
@@ -971,81 +961,85 @@ def _render_conflict_card(c: dict) -> str:
         fact_a_id = c.get("fact_a_id", "")
         fact_b_id = c.get("fact_b_id", "")
 
-    sev_color = {"high": "#dc2626", "medium": "#d97706", "low": "#6b7280"}.get(severity, "#6b7280")
+    sev_badge_cls = {"high": "badge-high", "medium": "badge-medium", "low": "badge-low"}.get(severity, "badge-low")
+    status_badge_cls = {"open": "badge-open", "resolved": "badge-resolved", "dismissed": "badge-dismissed"}.get(status, "badge-dismissed")
 
     def _fact_box(f: dict, label: str) -> str:
         content = _esc(str(f.get("content") or ""))
         scope = _esc(str(f.get("scope") or ""))
         agent = _esc(str(f.get("agent_id") or ""))
         return (
-            f'<div style="flex:1;background:#111827;border:1px solid #374151;border-radius:8px;padding:0.85rem;">'
-            f'<div style="font-size:0.7rem;font-weight:600;color:#6b7280;margin-bottom:0.4rem;text-transform:uppercase;">{label}</div>'
-            f'<div style="color:#f9fafb;font-size:0.88rem;line-height:1.5;margin-bottom:0.5rem;">{content}</div>'
-            f'<div style="font-size:0.75rem;color:#6b7280;">scope: {scope} · agent: {agent}</div>'
+            f'<div class="fact-box">'
+            f'<div class="fact-meta" style="font-weight:600;margin-bottom:0.35rem;text-transform:uppercase;font-size:0.68rem;">{label}</div>'
+            f'<div class="fact-content">{content}</div>'
+            f'<div class="fact-meta">scope: {scope} · agent: {agent}</div>'
             f"</div>"
         )
 
-    # Actions
+    # Build action buttons for open conflicts
     actions_html = ""
     if status == "open":
         keep_a = (
-            f'<button style="padding:0.3rem 0.7rem;background:#1f2937;border:1px solid #4ade80;color:#4ade80;border-radius:6px;font-size:0.8rem;cursor:pointer;" '
+            f'<button class="btn-approve" '
             f'hx-post="/dashboard/conflicts/{_esc(cid)}/approve" '
-            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Keep fact A</button>'
+            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Keep Fact A</button>'
         )
         keep_b = (
-            f'<button style="padding:0.3rem 0.7rem;background:#1f2937;border:1px solid #4ade80;color:#4ade80;border-radius:6px;font-size:0.8rem;cursor:pointer;" '
+            f'<button class="btn-approve" '
             f'hx-post="/dashboard/conflicts/{_esc(cid)}/approve" '
-            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Keep fact B</button>'
+            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Keep Fact B</button>'
         )
-        dismiss = (
-            f'<button style="padding:0.3rem 0.7rem;background:#1f2937;border:1px solid #6b7280;color:#9ca3af;border-radius:6px;font-size:0.8rem;cursor:pointer;" '
+        dismiss_btn = (
+            f'<button class="btn-dismiss" '
             f'hx-post="/dashboard/conflicts/{_esc(cid)}/dismiss" '
             f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Dismiss</button>'
         )
+
+        suggestion_html = ""
         if suggested_text:
             winning_label = ""
             if winning_id == fact_a_id:
                 winning_label = " · keep Fact A"
             elif winning_id == fact_b_id:
                 winning_label = " · keep Fact B"
-            suggestion_section = (
-                f'<div style="background:#1a2e1a;border:1px solid #166534;border-radius:6px;padding:0.75rem;margin-top:0.75rem;font-size:0.82rem;">'
-                f'<div style="color:#86efac;font-weight:600;margin-bottom:0.25rem;">Suggested: {_esc(suggested_type)}{_esc(winning_label)}</div>'
-                f'<div style="color:#d1fae5;margin-bottom:0.5rem;">{_esc(suggested_text)}</div>'
-                f'<div style="color:#6b7280;font-size:0.75rem;margin-bottom:0.5rem;">{_esc(reasoning)}</div>'
-                f'<div style="display:flex;gap:0.5rem;">'
-                f'<button style="padding:0.3rem 0.7rem;background:#166534;border:none;color:#d1fae5;border-radius:6px;font-size:0.8rem;cursor:pointer;" '
+            suggestion_html = (
+                f'<div class="suggestion-box">'
+                f'<div class="suggestion-header">🤖 Suggested: {_esc(suggested_type)}{_esc(winning_label)}</div>'
+                f'<div class="suggestion-text">{_esc(suggested_text)}</div>'
+                f'<div class="suggestion-reasoning">{_esc(reasoning)}</div>'
+                f'<div class="suggestion-actions">'
+                f'<button class="btn-approve" '
                 f'hx-post="/dashboard/conflicts/{_esc(cid)}/approve" '
-                f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Approve</button>'
-                f"{dismiss}</div></div>"
+                f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Approve suggestion</button>'
+                f"{dismiss_btn}</div></div>"
             )
-        else:
-            suggestion_section = ""
+
         actions_html = (
-            f'<div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">'
-            f"{keep_a}{keep_b}{dismiss}</div>"
-            f"{suggestion_section}"
+            f'<div class="suggestion-actions" style="margin-top:0.75rem;">'
+            f"{keep_a}{keep_b}{dismiss_btn}</div>"
+            f"{suggestion_html}"
         )
     elif resolution:
         actions_html = (
-            f'<div style="margin-top:0.5rem;font-size:0.8rem;color:#6b7280;">'
-            f"Resolved as <strong style='color:#9ca3af;'>{_esc(resolution_type)}</strong>: {_esc(resolution)}"
+            f'<div class="resolution-note">'
+            f"Resolved as <strong>{_esc(resolution_type)}</strong>: {_esc(resolution)}"
             f"</div>"
         )
 
     return (
-        f'<div id="conflict-{_esc(cid)}" style="background:#161f16;border:1px solid {sev_color}33;'
-        f'border-left:3px solid {sev_color};border-radius:8px;padding:1rem;margin-bottom:1rem;">'
-        f'<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap;">'
-        f'<span style="background:{sev_color}22;color:{sev_color};padding:0.15rem 0.5rem;border-radius:4px;font-size:0.72rem;font-weight:600;">{severity}</span>'
-        f'<span style="color:#6b7280;font-size:0.72rem;">{_esc(detected)}</span>'
-        f'<span style="color:#6b7280;font-size:0.72rem;margin-left:auto;">{_esc(status)}</span>'
+        f'<div id="conflict-{_esc(cid)}" class="conflict-card">'
+        f'<div class="conflict-header">'
+        f'<span class="badge {sev_badge_cls}">{_esc(severity)}</span>'
+        f'<span class="conflict-id">{_esc(cid[:12])}</span>'
+        f'<span style="color:#9ab89a;font-size:0.72rem;">{_esc(detected)}</span>'
+        f'<span class="badge {status_badge_cls}" style="margin-left:auto;">{_esc(status)}</span>'
         f"</div>"
-        f'<div style="display:flex;gap:0.75rem;flex-wrap:wrap;">{_fact_box(fact_a, "Fact A")}'
-        f'<div style="display:flex;align-items:center;font-size:0.9rem;font-weight:700;color:#6b7280;padding:0 0.25rem;">vs</div>'
-        f"{_fact_box(fact_b, 'Fact B')}</div>"
-        f'<div style="margin-top:0.6rem;font-size:0.8rem;color:#9ca3af;">{_esc(explanation)}</div>'
+        f'<div class="conflict-facts">'
+        f"{_fact_box(fact_a, 'Fact A')}"
+        f'<div class="vs-divider">vs</div>'
+        f"{_fact_box(fact_b, 'Fact B')}"
+        f"</div>"
+        f'<div class="conflict-explanation">{_esc(explanation)}</div>'
         f"{actions_html}"
         f"</div>"
     )
