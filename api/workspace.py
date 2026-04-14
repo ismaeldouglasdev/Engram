@@ -365,6 +365,25 @@ async def handle_session_search(request: Request) -> JSONResponse:
                    LIMIT 500""",
                 engram_id,
             )
+            agent_rows = await conn.fetch(
+                f"""SELECT agent_id, engineer, label, last_seen, total_commits
+                   FROM {SCHEMA}.agents WHERE workspace_id = $1""",
+                engram_id,
+            )
+    except Exception:
+        # Tables may not exist yet if no MCP commits have been made — return empty workspace
+        pass
+
+    # Run heuristic conflict detection before returning so the dashboard always
+    # shows fresh conflicts without waiting for the next commit.
+    try:
+        from api.mcp import _detect_conflicts_heuristic
+        await _detect_conflicts_heuristic(engram_id, pool)
+    except Exception:
+        pass
+
+    try:
+        async with pool.acquire() as conn:
             conflict_rows = await conn.fetch(
                 f"""SELECT id, fact_a_id, fact_b_id, explanation, severity, status, detected_at
                    FROM {SCHEMA}.conflicts
@@ -373,13 +392,7 @@ async def handle_session_search(request: Request) -> JSONResponse:
                    LIMIT 200""",
                 engram_id,
             )
-            agent_rows = await conn.fetch(
-                f"""SELECT agent_id, engineer, label, last_seen, total_commits
-                   FROM {SCHEMA}.agents WHERE workspace_id = $1""",
-                engram_id,
-            )
     except Exception:
-        # Tables may not exist yet if no MCP commits have been made — return empty workspace
         pass
 
     def _ser(v: Any) -> Any:

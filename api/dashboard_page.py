@@ -1578,7 +1578,7 @@ function renderDetail() {
   }
 
   const badge = document.getElementById('conflict-badge');
-  if (openC > 0) badge.textContent = '(' + openC + ')';
+  badge.textContent = openC > 0 ? '(' + openC + ')' : '';
 
   renderConflicts();
   renderFacts();

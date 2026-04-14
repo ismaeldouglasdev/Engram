@@ -376,10 +376,140 @@ async def _auth_workspace(request: Request) -> str | None:
         return None
 
 
-# ── Conflict detection (LLM-only) ────────────────────────────────────
+# ── Conflict detection ───────────────────────────────────────────────
 
 _CONFLICT_MODEL = "gpt-4o-mini"
 _BATCH_CHAR_LIMIT = 24000  # ~6k tokens of facts per batch
+
+# Regex patterns for simple heuristic contradiction detection
+import re as _re
+
+_UNLIMITED_RE = _re.compile(
+    r"\bunlimited\b|\bno\s+limit\b|\bno\s+cap\b|\bno\s+maximum\b"
+    r"|\bremov\w+\s+\w*\s*(?:cap|limit)\b|\bwithout\s+limit\b",
+    _re.IGNORECASE,
+)
+_LIMIT_RE = _re.compile(
+    r"\bmaximum\s+of\s+(\d+)|\bmax\s+(\d+)|\bcap\s+of\s+(\d+)"
+    r"|\blimit\s+of\s+(\d+)|\bup\s+to\s+(\d+)|\bonly\s+(\d+)\b"
+    r"|\b(\d+)\s+(?:project|repo|seat|user|item|task)",
+    _re.IGNORECASE,
+)
+_BOOL_TRUE_RE = _re.compile(
+    r"\bis\s+enabled\b|\bis\s+active\b|\bis\s+on\b|\bexists?\b|\bmust\s+be\s+enforced\b",
+    _re.IGNORECASE,
+)
+_BOOL_FALSE_RE = _re.compile(
+    r"\bis\s+disabled\b|\bis\s+inactive\b|\bis\s+off\b|\bdoes\s+not\s+exist\b|\bnot\s+enforced\b",
+    _re.IGNORECASE,
+)
+
+
+def _extract_key_nouns(text: str) -> set[str]:
+    """Return lowercase words that look like subject nouns (4+ chars, not stopwords)."""
+    _STOP = {
+        "this", "that", "with", "have", "from", "they", "will", "been",
+        "more", "also", "when", "their", "there", "which", "were", "what",
+        "then", "than", "into", "only", "some", "your", "each", "must",
+        "fact", "user", "agent", "team", "site", "page",
+    }
+    words = _re.findall(r"\b[a-z]{4,}\b", text.lower())
+    return {w for w in words if w not in _STOP}
+
+
+def _facts_share_subject(a: str, b: str) -> bool:
+    """Return True if two fact contents share at least one key noun."""
+    return bool(_extract_key_nouns(a) & _extract_key_nouns(b))
+
+
+async def _detect_conflicts_heuristic(workspace_id: str, pool: Any) -> None:
+    """Rule-based conflict detection that works without any external API.
+
+    Detects:
+    - 'unlimited / no limit' vs 'maximum of N / limit of N' in the same scope
+    - Boolean contradictions (enabled vs disabled) in the same scope
+    """
+    try:
+        async with _safe(pool) as conn:
+            rows = await conn.fetch(
+                """SELECT id, content, scope FROM facts
+                   WHERE workspace_id = $1 AND valid_until IS NULL
+                   ORDER BY committed_at ASC""",
+                workspace_id,
+            )
+        facts = [dict(r) for r in rows]
+        if len(facts) < 2:
+            return
+
+        now = datetime.now(timezone.utc)
+        to_insert: list[tuple[str, str, str]] = []  # (fa_id, fb_id, explanation)
+
+        # Group by scope for same-scope checks
+        by_scope: dict[str, list[dict]] = {}
+        for f in facts:
+            by_scope.setdefault(f["scope"], []).append(f)
+
+        for scope_facts in by_scope.values():
+            if len(scope_facts) < 2:
+                continue
+            for i, fa in enumerate(scope_facts):
+                for fb in scope_facts[i + 1 :]:
+                    if not _facts_share_subject(fa["content"], fb["content"]):
+                        continue
+                    a_unlimited = bool(_UNLIMITED_RE.search(fa["content"]))
+                    b_unlimited = bool(_UNLIMITED_RE.search(fb["content"]))
+                    a_limited = bool(_LIMIT_RE.search(fa["content"]))
+                    b_limited = bool(_LIMIT_RE.search(fb["content"]))
+                    a_true = bool(_BOOL_TRUE_RE.search(fa["content"]))
+                    b_true = bool(_BOOL_TRUE_RE.search(fb["content"]))
+                    a_false = bool(_BOOL_FALSE_RE.search(fa["content"]))
+                    b_false = bool(_BOOL_FALSE_RE.search(fb["content"]))
+
+                    explanation: str | None = None
+                    if (a_unlimited and b_limited) or (a_limited and b_unlimited):
+                        explanation = (
+                            "Is the quantity unlimited, or is there a fixed maximum? "
+                            "One fact says unlimited, another says there is a cap."
+                        )
+                    elif (a_true and b_false) or (a_false and b_true):
+                        explanation = (
+                            "Contradictory state detected: one fact says enabled/active, "
+                            "another says disabled/inactive for the same subject."
+                        )
+
+                    if explanation:
+                        to_insert.append((fa["id"], fb["id"], explanation))
+
+        if not to_insert:
+            return
+
+        async with _safe(pool) as conn:
+            for fa_id, fb_id, explanation in to_insert:
+                existing = await conn.fetchrow(
+                    """SELECT 1 FROM conflicts WHERE workspace_id = $1
+                         AND ((fact_a_id = $2 AND fact_b_id = $3)
+                           OR (fact_a_id = $3 AND fact_b_id = $2))""",
+                    workspace_id,
+                    fa_id,
+                    fb_id,
+                )
+                if existing:
+                    continue
+                cid = str(uuid.uuid4())
+                await conn.execute(
+                    """INSERT INTO conflicts
+                       (id, fact_a_id, fact_b_id, explanation, severity, workspace_id)
+                       VALUES ($1, $2, $3, $4, 'medium', $5)
+                       ON CONFLICT DO NOTHING""",
+                    cid,
+                    fa_id,
+                    fb_id,
+                    explanation,
+                    workspace_id,
+                )
+                logger.info("Heuristic conflict: %s vs %s", fa_id[:8], fb_id[:8])
+    except Exception as exc:
+        logger.warning("Heuristic conflict detection failed: %s", exc)
 
 
 async def _detect_conflicts(
@@ -402,6 +532,9 @@ async def _detect_conflicts(
 
     This focuses the detective on the signal, not the noise.
     """
+    # Always run heuristic detection first — works without any API key.
+    await _detect_conflicts_heuristic(workspace_id, pool)
+
     if not OPENAI_API_KEY:
         return
 
@@ -1023,6 +1156,10 @@ async def _tool_conflicts(
     scope: str | None = None,
     status: str = "open",
 ) -> dict:
+    # Run heuristic scan before returning results so freshly committed
+    # contradictions show up immediately without waiting for the next commit.
+    await _detect_conflicts_heuristic(workspace_id, pool)
+
     async with _safe(pool) as conn:
         conds = ["c.workspace_id = $1", "c.status = $2"]
         args: list[Any] = [workspace_id, status]
