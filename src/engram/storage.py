@@ -57,6 +57,9 @@ class BaseStorage(ABC):
     async def fts_search(self, query: str, limit: int = 20, offset: int = 0) -> list[int]: ...
 
     @abstractmethod
+    async def generate_agents_md(self) -> str: ...
+
+    @abstractmethod
     async def get_facts_by_rowids(self, rowids: list[int]) -> list[dict]: ...
 
     @abstractmethod
@@ -2008,123 +2011,6 @@ class SQLiteStorage(BaseStorage):
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def gdpr_soft_erase_agent(self, agent_id: str) -> dict[str, int]:
-        """Soft-erase: redact PII fields while preserving fact content."""
-        counts: dict[str, int] = {
-            "facts_updated": 0,
-            "conflicts_scrubbed": 0,
-            "conflicts_closed": 0,
-            "agents_updated": 0,
-            "scope_permissions_deleted": 0,
-            "scopes_updated": 0,
-            "audit_rows_scrubbed": 0,
-        }
-
-        c = await self.db.execute(
-            "UPDATE facts SET engineer = '[redacted]', provenance = NULL "
-            "WHERE agent_id = ? AND workspace_id = ?",
-            (agent_id, self.workspace_id),
-        )
-        counts["facts_updated"] = c.rowcount
-
-        c = await self.db.execute(
-            "UPDATE conflicts SET explanation = '[redacted]', resolution = '[redacted]', "
-            "suggested_resolution = NULL, suggestion_reasoning = NULL "
-            "WHERE workspace_id = ? AND (fact_a_id IN "
-            "(SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?) "
-            "OR fact_b_id IN "
-            "(SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))",
-            (self.workspace_id, agent_id, self.workspace_id, agent_id, self.workspace_id),
-        )
-        counts["conflicts_scrubbed"] = c.rowcount
-
-        c = await self.db.execute(
-            "UPDATE agents SET engineer = '[redacted]' WHERE agent_id = ? AND workspace_id = ?",
-            (agent_id, self.workspace_id),
-        )
-        counts["agents_updated"] = c.rowcount
-
-        c = await self.db.execute(
-            "UPDATE audit_log SET agent_id = '[redacted]' WHERE agent_id = ? AND workspace_id = ?",
-            (agent_id, self.workspace_id),
-        )
-        counts["audit_rows_scrubbed"] = c.rowcount
-
-        await self.db.commit()
-        return counts
-
-    async def gdpr_hard_erase_agent(self, agent_id: str) -> dict[str, int]:
-        """Hard-erase: replace fact content and retire all facts for agent_id."""
-        now = _now_iso()
-        counts: dict[str, int] = {
-            "facts_updated": 0,
-            "conflicts_closed": 0,
-            "conflicts_scrubbed": 0,
-            "agents_updated": 0,
-            "scope_permissions_deleted": 0,
-            "scopes_updated": 0,
-            "audit_rows_scrubbed": 0,
-        }
-
-        c = await self.db.execute(
-            "UPDATE facts SET content = '[gdpr:erased:' || id || ']', keywords = NULL, entities = NULL, "
-            "embedding = NULL, engineer = '[redacted]', provenance = NULL, "
-            "valid_until = COALESCE(valid_until, ?), memory_op = 'delete' "
-            "WHERE agent_id = ? AND workspace_id = ?",
-            (now, agent_id, self.workspace_id),
-        )
-        counts["facts_updated"] = c.rowcount
-
-        c = await self.db.execute(
-            "UPDATE conflicts SET status = 'dismissed', resolution_type = 'gdpr_erasure', "
-            "resolution = '[redacted]', explanation = '[redacted]', resolved_at = ?, "
-            "suggested_resolution = NULL, suggestion_reasoning = NULL, suggested_winning_fact_id = NULL "
-            "WHERE workspace_id = ? AND status = 'open' AND "
-            "(fact_a_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?) "
-            "OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))",
-            (now, self.workspace_id, agent_id, self.workspace_id, agent_id, self.workspace_id),
-        )
-        counts["conflicts_closed"] = c.rowcount
-
-        c = await self.db.execute(
-            "UPDATE conflicts SET explanation = '[redacted]', resolution = '[redacted]', "
-            "suggested_resolution = NULL, suggestion_reasoning = NULL, suggested_winning_fact_id = NULL "
-            "WHERE workspace_id = ? AND status != 'open' AND "
-            "(fact_a_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?) "
-            "OR fact_b_id IN (SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?))",
-            (self.workspace_id, agent_id, self.workspace_id, agent_id, self.workspace_id),
-        )
-        counts["conflicts_scrubbed"] = c.rowcount
-
-        c = await self.db.execute(
-            "DELETE FROM scope_permissions WHERE agent_id = ?",
-            (agent_id,),
-        )
-        counts["scope_permissions_deleted"] = c.rowcount
-
-        c = await self.db.execute(
-            "UPDATE audit_log SET agent_id = '[redacted]' WHERE agent_id = ? AND workspace_id = ?",
-            (agent_id, self.workspace_id),
-        )
-        counts["audit_rows_scrubbed"] = c.rowcount
-
-        c = await self.db.execute(
-            "UPDATE audit_log SET fact_id = NULL "
-            "WHERE workspace_id = ? AND fact_id IN "
-            "(SELECT id FROM facts WHERE agent_id = ? AND workspace_id = ?)",
-            (self.workspace_id, agent_id, self.workspace_id),
-        )
-        counts["audit_rows_scrubbed"] += c.rowcount
-
-        c = await self.db.execute(
-            "UPDATE agents SET engineer = '[redacted]' WHERE agent_id = ? AND workspace_id = ?",
-            (agent_id, self.workspace_id),
-        )
-        counts["agents_updated"] = c.rowcount
-
-        await self.db.commit()
-        return counts
-
     async def generate_agents_md(self) -> str:
         """Generate AGENTS.md content from workspace facts.
 
@@ -2142,7 +2028,6 @@ class SQLiteStorage(BaseStorage):
             "",
         ]
 
-        # Add key facts organized by scope
         scopes: dict[str, list[dict]] = {}
         for fact in current_facts:
             scope = fact.get("scope", "general")
@@ -2150,7 +2035,6 @@ class SQLiteStorage(BaseStorage):
                 scopes[scope] = []
             scopes[scope].append(fact)
 
-        # Add facts from main scopes
         main_scopes = ["general", "project", "architecture", "setup", "guidelines"]
         for scope in main_scopes:
             if scope in scopes and scopes[scope]:
@@ -2161,7 +2045,6 @@ class SQLiteStorage(BaseStorage):
                     lines.append(f"- {content}")
                 lines.append("")
 
-        # Add recent facts
         lines.append("## Recent Knowledge")
         lines.append("")
         for fact in current_facts[:10]:
