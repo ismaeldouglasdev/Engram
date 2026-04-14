@@ -41,7 +41,7 @@ class BaseStorage(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def expire_ttl_facts(self) -> int: ...
+    async def expire_ttl_facts(self, as_of: str | None = None) -> int: ...
 
     @abstractmethod
     async def get_current_facts_in_scope(
@@ -54,7 +54,10 @@ class BaseStorage(ABC):
     ) -> list[dict]: ...
 
     @abstractmethod
-    async def fts_search(self, query: str, limit: int = 20) -> list[int]: ...
+    async def fts_search(self, query: str, limit: int = 20, offset: int = 0) -> list[int]: ...
+
+    @abstractmethod
+    async def generate_agents_md(self) -> str: ...
 
     @abstractmethod
     async def get_facts_by_rowids(self, rowids: list[int]) -> list[dict]: ...
@@ -214,6 +217,14 @@ class BaseStorage(ABC):
     ) -> None: ...
 
     @abstractmethod
+    async def update_fact_entities(self, fact_id: str, entities_json: str) -> None: ...
+
+    @abstractmethod
+    async def get_facts_with_empty_entities(
+        self, limit: int = 200, offset: int = 0
+    ) -> list[dict]: ...
+
+    @abstractmethod
     async def get_facts_since(
         self, after: str, scope_prefix: str | None = None, limit: int = 1000
     ) -> list[dict]: ...
@@ -267,6 +278,9 @@ class BaseStorage(ABC):
         """Return workspace row or None."""
         return None
 
+    async def update_workspace_display_name(self, engram_id: str, display_name: str) -> None:
+        """Update the display name for a workspace. Default no-op for local mode."""
+
     async def insert_invite_key(
         self,
         key_hash: str,
@@ -296,8 +310,43 @@ class BaseStorage(ABC):
         """Return list of active invite keys. Default empty list."""
         return []
 
-    async def revoke_all_invite_keys(self, engram_id: str) -> None:
-        """Delete all invite keys for a workspace. Default no-op."""
+    async def revoke_all_invite_keys(
+        self,
+        engram_id: str,
+        *,
+        grace_minutes: int = 15,
+        reason: str | None = None,
+    ) -> None:
+        """Soft-revoke all active invite keys for a workspace.
+
+        If grace_minutes > 0, keys are marked revoked but kept in the table
+        until grace_until expires, allowing existing sessions to continue.
+        If grace_minutes == 0, keys are hard-deleted immediately.
+        Expired grace keys are always cleaned up as a side-effect.
+        Default no-op for local mode.
+        """
+
+    async def get_active_grace_until(self, engram_id: str) -> str | None:
+        """Return the latest grace_until among revoked-but-not-yet-expired keys.
+
+        Returns None if no grace window is currently active.
+        Default None for local mode.
+        """
+        return None
+
+    async def cleanup_expired_grace_keys(self, engram_id: str) -> int:
+        """Hard-delete revoked invite keys whose grace_until has passed.
+
+        Returns the number of rows deleted. Default 0 for local mode.
+        """
+        return 0
+
+    async def get_key_rotation_history(self, engram_id: str, limit: int = 20) -> list[dict]:
+        """Return audit_log entries with operation='key_rotation' for the workspace.
+
+        Ordered by timestamp descending. Default empty list for local mode.
+        """
+        return []
 
     # ── Webhook methods ───────────────────────────────────────────────
 
@@ -538,16 +587,22 @@ class SQLiteStorage(BaseStorage):
             )
         await self.db.commit()
 
-    async def expire_ttl_facts(self) -> int:
-        """Close validity windows for TTL-expired facts in this workspace. Returns count."""
-        now = _now_iso()
+    async def expire_ttl_facts(self, as_of: str | None = None) -> int:
+        """Close validity windows for TTL-expired facts in this workspace. Returns count.
+
+        ``as_of`` overrides the current time, enabling deterministic tests.
+        Only ephemeral facts are eligible — promoted (durable) facts are exempt
+        even when they retain a ``ttl_days`` value from before promotion.
+        """
+        now = as_of or _now_iso()
         cursor = await self.db.execute(
             """UPDATE facts SET valid_until = ?
                WHERE ttl_days IS NOT NULL
                  AND valid_until IS NULL
+                 AND durability = 'ephemeral'
                  AND workspace_id = ?
-                 AND datetime(valid_from, '+' || ttl_days || ' days') < ?""",
-            (now, self.workspace_id, now),
+                 AND datetime(substr(valid_from, 1, 19), '+' || ttl_days || ' days') < datetime('now')""",
+            (now, self.workspace_id),
         )
         await self.db.commit()
         return cursor.rowcount
@@ -560,6 +615,7 @@ class SQLiteStorage(BaseStorage):
         fact_type: str | None = None,
         as_of: str | None = None,
         limit: int = 200,
+        offset: int = 0,
         include_ephemeral: bool = False,
     ) -> list[dict]:
         """Retrieve currently valid facts, optionally filtered."""
@@ -587,19 +643,105 @@ class SQLiteStorage(BaseStorage):
 
         where = " AND ".join(conditions)
         params.append(limit)
+        params.append(offset)
 
         cursor = await self.db.execute(
-            f"SELECT * FROM facts WHERE {where} ORDER BY committed_at DESC LIMIT ?",
+            f"SELECT * FROM facts WHERE {where} ORDER BY pinned DESC, committed_at DESC LIMIT ? OFFSET ?",
             params,
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def fts_search(self, query: str, limit: int = 20) -> list[int]:
+    async def pin_fact(self, fact_id: str) -> bool:
+        """Pin a fact to always appear at top of queries."""
+        from datetime import datetime, timezone
+
+        cursor = await self.db.execute(
+            "UPDATE facts SET pinned = 1, pinned_at = ? WHERE id = ? AND workspace_id = ?",
+            (datetime.now(timezone.utc).isoformat(), fact_id, self.workspace_id),
+        )
+        return cursor.rowcount > 0
+
+    async def unpin_fact(self, fact_id: str) -> bool:
+        """Unpin a fact."""
+        cursor = await self.db.execute(
+            "UPDATE facts SET pinned = 0, pinned_at = NULL WHERE id = ? AND workspace_id = ?",
+            (fact_id, self.workspace_id),
+        )
+        return cursor.rowcount > 0
+
+    async def endorse_fact(self, fact_id: str) -> bool:
+        """Endorse a fact (human approval)."""
+        cursor = await self.db.execute(
+            "UPDATE facts SET endorsements = endorsements + 1 WHERE id = ? AND workspace_id = ?",
+            (fact_id, self.workspace_id),
+        )
+        return cursor.rowcount > 0
+
+    async def downvote_fact(self, fact_id: str) -> bool:
+        """Downvote a fact (human disapproval)."""
+        cursor = await self.db.execute(
+            "UPDATE facts SET downvotes = downvotes + 1 WHERE id = ? AND workspace_id = ?",
+            (fact_id, self.workspace_id),
+        )
+        return cursor.rowcount > 0
+
+    async def auto_tag_facts(self, fact_ids: list[str] | None = None) -> int:
+        """Automatically tag facts with taxonomy categories based on content.
+
+        Categories: code, docs, config, business, personal, technical, other
+        Returns number of facts tagged.
+        """
+        import re
+
+        tag_patterns = {
+            "code": r"\b(function|class|def |import |return |var |let |const |=>|->|\.py|\.js|\.ts)\b",
+            "docs": r"\b(documentation|readme|guide|manual|how-to|tutorial|example)\b",
+            "config": r"\b(config|setting|option|parameter|env|yaml|json|toml)\b",
+            "business": r"\b(customer|pricing|revenue|order|payment|invoice|contract)\b",
+            "personal": r"\b(todo|reminder|meeting|schedule|personal|private)\b",
+            "technical": r"\b(api|database|server|network|deploy|build|test)\b",
+        }
+
+        conditions = ["workspace_id = ?"]
+        params: list[Any] = [self.workspace_id]
+
+        if fact_ids:
+            placeholders = ",".join("?" * len(fact_ids))
+            conditions.append(f"id IN ({placeholders})")
+            params.extend(fact_ids)
+
+        cursor = await self.db.execute(
+            f"SELECT id, content, keywords FROM facts WHERE {' AND '.join(conditions)}",
+            params,
+        )
+        rows = await cursor.fetchall()
+
+        tagged = 0
+        for row in rows:
+            content = row.get("content", "")
+            current_keywords = row.get("keywords", "") or ""
+            tags = []
+
+            for tag, pattern in tag_patterns.items():
+                if re.search(pattern, content, re.IGNORECASE):
+                    tags.append(tag)
+
+            if tags:
+                new_keywords = ",".join(sorted(set(tags + current_keywords.split(","))))
+                await self.db.execute(
+                    "UPDATE facts SET keywords = ? WHERE id = ?",
+                    (new_keywords, row["id"]),
+                )
+                tagged += 1
+
+        return tagged
+
+    async def fts_search(self, query: str, limit: int = 20, offset: int = 0) -> list[int]:
         """FTS5 BM25 search. Returns rowids ordered by relevance."""
         cursor = await self.db.execute(
-            "SELECT rowid, rank FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rank LIMIT ?",
-            (query, limit),
+            "SELECT rowid, rank FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rank LIMIT ? OFFSET ?",
+            (query, limit, offset),
         )
         rows = await cursor.fetchall()
         return [r["rowid"] for r in rows]
@@ -657,9 +799,14 @@ class SQLiteStorage(BaseStorage):
         return result
 
     async def promote_fact(self, fact_id: str) -> bool:
-        """Promote an ephemeral fact to durable. Returns True if promoted."""
+        """Promote an ephemeral fact to durable. Returns True if promoted.
+
+        Clears ``valid_until`` and ``ttl_days`` so the fact is no longer
+        subject to TTL expiry — making the promotion a permanent override.
+        """
         cursor = await self.db.execute(
-            "UPDATE facts SET durability = 'durable' WHERE id = ? AND durability = 'ephemeral'",
+            "UPDATE facts SET durability = 'durable', valid_until = NULL, ttl_days = NULL"
+            " WHERE id = ? AND durability = 'ephemeral'",
             (fact_id,),
         )
         await self.db.commit()
@@ -1101,6 +1248,31 @@ class SQLiteStorage(BaseStorage):
         )
         await self.db.commit()
 
+    async def update_fact_entities(self, fact_id: str, entities_json: str) -> None:
+        """Overwrite the entities column for an existing fact."""
+        await self.db.execute(
+            "UPDATE facts SET entities = ? WHERE id = ?",
+            (entities_json, fact_id),
+        )
+        await self.db.commit()
+
+    async def get_facts_with_empty_entities(self, limit: int = 200, offset: int = 0) -> list[dict]:
+        """Return current facts whose entities column is NULL or the empty JSON array.
+
+        Used by the startup entity backfill to re-extract entities for facts that
+        were committed before the entity extractor was updated.
+        """
+        cursor = await self.db.execute(
+            """SELECT id, content, scope FROM facts
+               WHERE valid_until IS NULL
+                 AND (entities IS NULL OR entities = '[]' OR entities = '')
+               ORDER BY committed_at DESC
+               LIMIT ? OFFSET ?""",
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
     # ── Federation: facts since watermark ─────────────────────────────
 
     async def get_facts_since(
@@ -1161,6 +1333,38 @@ class SQLiteStorage(BaseStorage):
             )
         row = await cursor.fetchone()
         return row["cnt"] if row else 0
+
+    async def get_memory_health_score(self) -> dict[str, Any]:
+        """Calculate memory health score based on various metrics."""
+        total_facts = await self.count_facts(current_only=False)
+        current_facts = await self.count_facts(current_only=True)
+        open_conflicts = await self.count_conflicts("open")
+        resolved_conflicts = await self.count_conflicts("resolved")
+
+        # Calculate health score (0-100)
+        # Start with 100, subtract for issues
+        score = 100.0
+
+        # Deduct for open conflicts (major issue)
+        if total_facts > 0:
+            conflict_ratio = open_conflicts / total_facts
+            score -= conflict_ratio * 40  # Up to 40 points for conflicts
+
+        # Deduct for low fact retention
+        if total_facts > 0:
+            retention_ratio = current_facts / total_facts
+            score -= (1 - retention_ratio) * 20  # Up to 20 points for expired facts
+
+        score = max(0, min(100, score))  # Clamp to 0-100
+
+        return {
+            "score": int(score),
+            "total_facts": total_facts,
+            "current_facts": current_facts,
+            "open_conflicts": open_conflicts,
+            "resolved_conflicts": resolved_conflicts,
+            "status": "healthy" if score >= 70 else "warning" if score >= 40 else "critical",
+        }
 
     async def get_agents(self) -> list[dict]:
         cursor = await self.db.execute("SELECT * FROM agents ORDER BY last_seen DESC")
@@ -1380,6 +1584,13 @@ class SQLiteStorage(BaseStorage):
         row = await cursor.fetchone()
         return dict(row) if row else None
 
+    async def update_workspace_display_name(self, engram_id: str, display_name: str) -> None:
+        await self.db.execute(
+            "UPDATE workspaces SET display_name = ? WHERE engram_id = ?",
+            (display_name, engram_id),
+        )
+        await self.db.commit()
+
     async def insert_invite_key(
         self,
         key_hash: str,
@@ -1400,7 +1611,8 @@ class SQLiteStorage(BaseStorage):
             """SELECT * FROM invite_keys
                WHERE key_hash = ?
                  AND (expires_at IS NULL OR expires_at > ?)
-                 AND (uses_remaining IS NULL OR uses_remaining > 0)""",
+                 AND (uses_remaining IS NULL OR uses_remaining > 0)
+                 AND revoked_at IS NULL""",
             (key_hash, _now_iso()),
         )
         row = await cursor.fetchone()
@@ -1413,6 +1625,7 @@ class SQLiteStorage(BaseStorage):
                WHERE key_hash = ?
                  AND (expires_at IS NULL OR expires_at > ?)
                  AND (uses_remaining IS NULL OR uses_remaining > 0)
+                 AND revoked_at IS NULL
                RETURNING *""",
             (key_hash, _now_iso()),
         )
@@ -1435,9 +1648,64 @@ class SQLiteStorage(BaseStorage):
         await self.db.commit()
         return await self.get_key_generation(engram_id)
 
-    async def revoke_all_invite_keys(self, engram_id: str) -> None:
-        await self.db.execute("DELETE FROM invite_keys WHERE engram_id = ?", (engram_id,))
+    async def revoke_all_invite_keys(
+        self,
+        engram_id: str,
+        *,
+        grace_minutes: int = 15,
+        reason: str | None = None,
+    ) -> None:
+        # Purge any already-expired grace keys as a side-effect.
+        await self.db.execute(
+            "DELETE FROM invite_keys WHERE engram_id = ? AND revoked_at IS NOT NULL AND grace_until < datetime('now')",
+            (engram_id,),
+        )
+        if grace_minutes > 0:
+            await self.db.execute(
+                """UPDATE invite_keys
+                   SET revoked_at      = datetime('now'),
+                       grace_until     = datetime('now', ? || ' minutes'),
+                       rotation_reason = ?
+                   WHERE engram_id = ? AND revoked_at IS NULL""",
+                (f"+{grace_minutes}", reason, engram_id),
+            )
+        else:
+            await self.db.execute(
+                "DELETE FROM invite_keys WHERE engram_id = ? AND revoked_at IS NULL",
+                (engram_id,),
+            )
         await self.db.commit()
+
+    async def get_active_grace_until(self, engram_id: str) -> str | None:
+        cursor = await self.db.execute(
+            """SELECT MAX(grace_until) FROM invite_keys
+               WHERE engram_id = ?
+                 AND revoked_at IS NOT NULL
+                 AND grace_until > datetime('now')""",
+            (engram_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else None
+
+    async def cleanup_expired_grace_keys(self, engram_id: str) -> int:
+        cursor = await self.db.execute(
+            "DELETE FROM invite_keys WHERE engram_id = ? AND revoked_at IS NOT NULL AND grace_until < datetime('now')",
+            (engram_id,),
+        )
+        await self.db.commit()
+        return cursor.rowcount
+
+    async def get_key_rotation_history(self, engram_id: str, limit: int = 20) -> list[dict]:
+        # In SQLite mode workspace_id in audit_log is self.workspace_id, not engram_id.
+        cursor = await self.db.execute(
+            """SELECT * FROM audit_log
+               WHERE operation = 'key_rotation' AND workspace_id = ?
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (self.workspace_id, max(1, min(limit, 200))),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     async def get_invite_keys(self) -> list[dict]:
         """Return list of active invite keys."""

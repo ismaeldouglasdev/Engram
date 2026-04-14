@@ -25,43 +25,57 @@ from engram.storage import BaseStorage
 logger = logging.getLogger("engram")
 
 
+def _load_entities(raw: Any) -> list[dict[str, Any]]:
+    """Return a parsed entity list from a fact row's entities field.
+
+    SQLite stores entities as a JSON string; PostgreSQL (JSONB) returns a
+    Python list directly.  Both cases are handled here so callers never need
+    to branch on storage backend.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    # str (SQLite) or bytes
+    return json.loads(raw) if raw else []
+
+
 class EngramEngine:
     """Core engine coordinating commit, query, detection, and resolution."""
 
     def __init__(self, storage: BaseStorage) -> None:
         self.storage = storage
-        self._detection_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=500)
+        # Detection queue: fact IDs waiting for async conflict scan
+        self._detection_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
         self._suggestion_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=500)
-        self._detection_task: asyncio.Task[None] | None = None
         self._ttl_task: asyncio.Task[None] | None = None
         self._decay_task: asyncio.Task[None] | None = None
-        self._calibration_task: asyncio.Task[None] | None = None
+        self._detection_task: asyncio.Task[None] | None = None
         self._suggestion_task: asyncio.Task[None] | None = None
         self._escalation_task: asyncio.Task[None] | None = None
         self._webhook_task: asyncio.Task[None] | None = None
-        self._nli_model: Any = None
-        self._nli_threshold_high: float = 0.85
-        self._nli_threshold_low: float = 0.50
         self._sse_subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._recent_queries: dict[
+            str, list[tuple[str, float]]
+        ] = {}  # agent_id -> [(topic, timestamp)]
+        self._nli_model: Any = None
 
     async def start(self) -> None:
-        """Start the background detection worker and periodic tasks."""
-        self._detection_task = asyncio.create_task(self._detection_worker())
+        """Start background periodic tasks."""
         self._ttl_task = asyncio.create_task(self._ttl_expiry_loop())
         self._decay_task = asyncio.create_task(self._decay_loop())
-        self._calibration_task = asyncio.create_task(self._calibration_loop())
+        self._detection_task = asyncio.create_task(self._detection_worker())
         self._suggestion_task = asyncio.create_task(self._suggestion_worker())
         self._escalation_task = asyncio.create_task(self._escalation_loop())
         self._webhook_task = asyncio.create_task(self._webhook_delivery_worker())
-        logger.info("Detection worker started")
+        logger.info("Engine started")
 
     async def stop(self) -> None:
         """Stop all background tasks."""
         for task in (
-            self._detection_task,
             self._ttl_task,
             self._decay_task,
-            self._calibration_task,
+            self._detection_task,
             self._suggestion_task,
             self._escalation_task,
             self._webhook_task,
@@ -72,10 +86,9 @@ class EngramEngine:
                     await task
                 except asyncio.CancelledError:
                     pass
-        self._detection_task = None
         self._ttl_task = None
         self._decay_task = None
-        self._calibration_task = None
+        self._detection_task = None
         self._suggestion_task = None
         self._escalation_task = None
         self._webhook_task = None
@@ -372,25 +385,24 @@ class EngramEngine:
         # Step 12: Increment agent commit count
         await self.storage.increment_agent_commits(agent_id)
 
-        # Step 13: Queue for async detection (skip for ephemeral facts)
-        if durability == "durable":
-            try:
-                await asyncio.wait_for(self._detection_queue.put(fact_id), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Detection queue full, skipping conflict check for %s",
-                    fact_id[:12],
-                )
-
-        # Step 14: Check for corroboration (Phase 2: multi-agent consensus)
+        # Step 13: Check for corroboration (Phase 2: multi-agent consensus)
         # Find semantically similar facts from different agents in the same scope
         await self._check_corroboration(fact_id, emb, agent_id, scope)
+
+        # Queue durable facts for async conflict detection
+        if durability == "durable":
+            try:
+                self._detection_queue.put_nowait(fact_id)
+            except asyncio.QueueFull:
+                logger.warning("Detection queue full, skipping conflict check for %s", fact_id[:12])
 
         result = {
             "fact_id": fact_id,
             "committed_at": now,
             "duplicate": False,
             "conflicts_detected": False,  # detection is async
+            "conflict_check_queued": durability == "durable",
+            "conflict_risk": self._estimate_conflict_risk(content, scope),
             "memory_op": operation,
             "supersedes_fact_id": supersedes_fact_id,
             "durability": durability,
@@ -419,6 +431,51 @@ class EngramEngine:
 
         return result
 
+    async def commit_batch(
+        self,
+        facts: list[dict[str, Any]],
+        scope: str = "general",
+        agent_id: str | None = None,
+        engineer: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Commit multiple facts in a single batch call.
+
+        More efficient than calling commit() multiple times.
+
+        Args:
+            facts: List of fact dicts with optional 'content', 'confidence', 'fact_type', 'provenance'
+            scope: Default scope for facts without explicit scope
+            agent_id: Agent identifier
+            engineer: Engineer identifier
+
+        Returns:
+            List of result dicts for each committed fact
+        """
+        results = []
+        for fact in facts:
+            content = fact.get("content", "")
+            if not content:
+                results.append({"error": "content is required", "success": False})
+                continue
+
+            try:
+                result = await self.commit(
+                    content=content,
+                    scope=fact.get("scope", scope),
+                    confidence=fact.get("confidence", 0.8),
+                    agent_id=agent_id,
+                    engineer=engineer,
+                    provenance=fact.get("provenance"),
+                    fact_type=fact.get("fact_type", "observation"),
+                    ttl_days=fact.get("ttl_days"),
+                    durability=fact.get("durability", "durable"),
+                )
+                results.append({"success": True, **result})
+            except Exception as e:
+                results.append({"success": False, "error": str(e)})
+
+        return results
+
     # ── engram_query ─────────────────────────────────────────────────
 
     async def query(
@@ -430,6 +487,7 @@ class EngramEngine:
         fact_type: str | None = None,
         include_ephemeral: bool = False,
         include_adjacent: bool = False,
+        agent_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query what the team's agents collectively know about a topic.
 
@@ -551,7 +609,7 @@ class EngramEngine:
 
             # Phase 1: Entity density (facts with structured entities are more actionable)
             try:
-                entities = json.loads(fact.get("entities") or "[]")
+                entities = _load_entities(fact.get("entities"))
                 entity_density = min(1.0, len(entities) / 5.0)  # cap at 5 entities
             except (json.JSONDecodeError, TypeError):
                 entity_density = 0.0
@@ -657,6 +715,12 @@ class EngramEngine:
                         pf["id"][:12],
                     )
 
+        # Detect query loops (repeated queries from same agent)
+        if agent_id:
+            loop_warning = self._check_query_loop(agent_id, topic)
+            if loop_warning:
+                logger.warning(loop_warning)
+
         return results
 
     async def _query_adjacent_scopes(
@@ -755,6 +819,40 @@ class EngramEngine:
         results.sort(key=lambda r: r["relevance_score"], reverse=True)
         return results
 
+    def _check_query_loop(self, agent_id: str, topic: str) -> str | None:
+        """Detect if an agent is repeatedly querying the same topic (potential loop).
+
+        Returns a warning message if a loop is detected, None otherwise.
+        """
+        import time
+        from collections import deque
+
+        now = time.time()
+        window_seconds = 300  # 5 minute window
+
+        if agent_id not in self._recent_queries:
+            self._recent_queries[agent_id] = deque()
+
+        # Add current query
+        self._recent_queries[agent_id].append((topic, now))
+
+        # Clean old entries outside the window
+        while (
+            self._recent_queries[agent_id]
+            and self._recent_queries[agent_id][0][1] < now - window_seconds
+        ):
+            self._recent_queries[agent_id].popleft()
+
+        # Check for repeated queries
+        queries = self._recent_queries[agent_id]
+        if len(queries) >= 5:
+            # Count unique topics in recent queries
+            topics = [q[0] for q in queries]
+            if len(set(topics)) == 1:
+                return f"Query loop detected: Agent '{agent_id}' has queried '{topic}' {len(queries)} times in 5 minutes. This may indicate an agent loop."
+
+        return None
+
     # ── engram_promote ──────────────────────────────────────────────
 
     async def promote(self, fact_id: str) -> dict[str, Any]:
@@ -769,8 +867,14 @@ class EngramEngine:
             raise ValueError(f"Fact {fact_id} not found.")
         if fact.get("durability") != "ephemeral":
             raise ValueError(f"Fact {fact_id} is already durable.")
-        if fact.get("valid_until") is not None:
-            raise ValueError(f"Fact {fact_id} has already expired or been superseded.")
+        # Allow promoting a fact whose TTL hasn't elapsed yet (valid_until is in
+        # the future).  Reject only facts that are definitively expired (valid_until
+        # in the past) or superseded (set by close_validity_window).
+        valid_until = fact.get("valid_until")
+        if valid_until is not None:
+            expiry = datetime.fromisoformat(valid_until)
+            if expiry <= datetime.now(timezone.utc):
+                raise ValueError(f"Fact {fact_id} has already expired or been superseded.")
 
         promoted = await self.storage.promote_fact(fact_id)
         if not promoted:
@@ -792,12 +896,269 @@ class EngramEngine:
             "durability": "durable",
         }
 
-    # ── engram_conflicts ─────────────────────────────────────────────
+    # ── Conflict Detection ───────────────────────────────────────────
+
+    async def _detection_worker(self) -> None:
+        """Async worker: dequeue fact IDs and run conflict scan for each."""
+        logger.info("Detection worker running")
+        try:
+            while True:
+                fact_id = await self._detection_queue.get()
+                try:
+                    # Re-generate embedding for facts that arrived without one
+                    # (e.g. federated facts ingested from remote workspaces)
+                    await self._ensure_embedding(fact_id)
+                    await self._scan_fact_for_conflicts(fact_id)
+                except Exception:
+                    logger.exception("Detection error for fact %s", fact_id)
+                finally:
+                    self._detection_queue.task_done()
+        except asyncio.CancelledError:
+            pass
+
+    async def _ensure_embedding(self, fact_id: str) -> None:
+        """Generate and store an embedding for a fact that doesn't have one yet."""
+        fact = await self.storage.get_fact_by_id(fact_id)
+        if not fact or fact.get("embedding") is not None:
+            return  # already has an embedding
+        try:
+            emb = embeddings.encode(fact["content"])
+            emb_bytes = embeddings.embedding_to_bytes(emb)
+            await self.storage.update_fact_embedding(fact_id, emb_bytes)
+            logger.debug("Re-generated embedding for fact %s", fact_id[:12])
+        except Exception:
+            logger.debug("Failed to generate embedding for fact %s", fact_id[:12])
+
+    async def _scan_fact_for_conflicts(self, fact_id: str) -> None:
+        """Compare a single fact against all current facts in its scope and cross-scope.
+
+        Runs three detection tiers:
+        - tier2_numeric: same-scope numeric entity value conflicts
+        - tier1_nli: semantic contradiction via NLI cross-encoder (when available)
+        - tier2b_cross_scope: numeric conflicts across different scopes
+        """
+        fact = await self.storage.get_fact_by_id(fact_id)
+        if not fact or fact.get("valid_until") is not None:
+            return  # expired or superseded — skip
+
+        scope = fact.get("scope")
+        now = datetime.now(timezone.utc).isoformat()
+
+        new_entities = extract_entities(fact.get("content") or "")
+        new_nums = {
+            e["name"]: e["value"]
+            for e in new_entities
+            if e["type"] == "numeric" and e.get("value") is not None
+        }
+
+        # Fetch same-scope candidates once — used by both numeric and NLI tiers
+        candidates = await self.storage.get_current_facts_in_scope(scope=scope, limit=200)
+
+        # ── Tier 2: Same-scope numeric entity conflicts ───────────────
+        if new_nums:
+            for other in candidates:
+                if other["id"] == fact_id:
+                    continue
+                if fact.get("lineage_id") and fact.get("lineage_id") == other.get("lineage_id"):
+                    continue
+                if await self.storage.conflict_exists(fact_id, other["id"]):
+                    continue
+
+                other_entities = extract_entities(other.get("content") or "")
+                other_nums = {
+                    e["name"]: e["value"]
+                    for e in other_entities
+                    if e["type"] == "numeric" and e.get("value") is not None
+                }
+
+                for name in set(new_nums) & set(other_nums):
+                    val_new = new_nums[name]
+                    val_other = other_nums[name]
+                    if str(val_new) == str(val_other):
+                        continue
+
+                    label_new = "unlimited" if val_new == -1 else str(val_new)
+                    label_other = "unlimited" if val_other == -1 else str(val_other)
+                    severity = "high" if fact.get("agent_id") != other.get("agent_id") else "medium"
+
+                    cid = uuid.uuid4().hex
+                    await self.storage.insert_conflict(
+                        {
+                            "id": cid,
+                            "fact_a_id": fact_id,
+                            "fact_b_id": other["id"],
+                            "detected_at": now,
+                            "detection_tier": "tier2_numeric",
+                            "nli_score": None,
+                            "explanation": (
+                                f"Conflict on '{name}': "
+                                f'"{fact["content"][:60]}…" says {label_new}, '
+                                f'"{other["content"][:60]}…" says {label_other}'
+                            ),
+                            "severity": severity,
+                            "status": "open",
+                        }
+                    )
+                    try:
+                        self._suggestion_queue.put_nowait(cid)
+                    except asyncio.QueueFull:
+                        pass
+                    logger.info(
+                        "Conflict detected (same-scope): %s=%s vs %s (facts %s, %s)",
+                        name,
+                        label_new,
+                        label_other,
+                        fact_id[:8],
+                        other["id"][:8],
+                    )
+
+        # ── Tier 1: NLI semantic contradiction ───────────────────────
+        nli_model = self._get_nli_model()
+        if nli_model is not None and candidates:
+            new_emb = None
+            try:
+                new_emb = (
+                    embeddings.bytes_to_embedding(fact.get("embedding"))
+                    if fact.get("embedding")
+                    else None
+                )
+            except Exception:
+                pass
+
+            for other in candidates:
+                if other["id"] == fact_id:
+                    continue
+                if fact.get("lineage_id") and fact.get("lineage_id") == other.get("lineage_id"):
+                    continue
+                if await self.storage.conflict_exists(fact_id, other["id"]):
+                    continue
+
+                # Only run NLI on semantically similar pairs (cosine > 0.5)
+                if new_emb is not None and other.get("embedding"):
+                    try:
+                        other_emb = embeddings.bytes_to_embedding(other["embedding"])
+                        sim = embeddings.cosine_similarity(new_emb, other_emb)
+                        if sim < 0.5:
+                            continue
+                    except Exception:
+                        pass
+
+                try:
+                    scores = nli_model.predict(
+                        [(fact["content"], other["content"])], apply_softmax=True
+                    )
+                    contradiction_score = scores[0][0]
+                    if contradiction_score > 0.7:
+                        severity = (
+                            "high" if fact.get("agent_id") != other.get("agent_id") else "medium"
+                        )
+                        cid = uuid.uuid4().hex
+                        await self.storage.insert_conflict(
+                            {
+                                "id": cid,
+                                "fact_a_id": fact_id,
+                                "fact_b_id": other["id"],
+                                "detected_at": now,
+                                "detection_tier": "tier1_nli",
+                                "nli_score": float(contradiction_score),
+                                "explanation": (
+                                    f"Semantic contradiction detected (NLI score: {contradiction_score:.2f}): "
+                                    f'"{fact["content"][:60]}…" vs "{other["content"][:60]}…"'
+                                ),
+                                "severity": severity,
+                                "status": "open",
+                            }
+                        )
+                        try:
+                            self._suggestion_queue.put_nowait(cid)
+                        except asyncio.QueueFull:
+                            pass
+                        logger.info(
+                            "NLI conflict detected (score=%.2f): facts %s, %s",
+                            contradiction_score,
+                            fact_id[:8],
+                            other["id"][:8],
+                        )
+                except Exception:
+                    logger.debug(
+                        "NLI prediction failed for facts %s, %s", fact_id[:8], other["id"][:8]
+                    )
+
+        # ── Tier 2b: Cross-scope numeric conflicts ────────────────────
+        if new_nums:
+            all_scopes = await self.storage.get_distinct_scopes()
+            for other_scope in all_scopes:
+                if other_scope == scope:
+                    continue
+                cross_candidates = await self.storage.get_current_facts_in_scope(
+                    scope=other_scope, limit=100
+                )
+                for other in cross_candidates:
+                    if other["id"] == fact_id:
+                        continue
+                    if fact.get("lineage_id") and fact.get("lineage_id") == other.get("lineage_id"):
+                        continue
+                    if await self.storage.conflict_exists(fact_id, other["id"]):
+                        continue
+
+                    other_entities = extract_entities(other.get("content") or "")
+                    other_nums = {
+                        e["name"]: e["value"]
+                        for e in other_entities
+                        if e["type"] == "numeric" and e.get("value") is not None
+                    }
+
+                    for name in set(new_nums) & set(other_nums):
+                        val_new = new_nums[name]
+                        val_other = other_nums[name]
+                        if str(val_new) == str(val_other):
+                            continue
+
+                        label_new = "unlimited" if val_new == -1 else str(val_new)
+                        label_other = "unlimited" if val_other == -1 else str(val_other)
+                        severity = (
+                            "high" if fact.get("agent_id") != other.get("agent_id") else "medium"
+                        )
+
+                        cid = uuid.uuid4().hex
+                        await self.storage.insert_conflict(
+                            {
+                                "id": cid,
+                                "fact_a_id": fact_id,
+                                "fact_b_id": other["id"],
+                                "detected_at": now,
+                                "detection_tier": "tier2b_cross_scope",
+                                "nli_score": None,
+                                "explanation": (
+                                    f"Cross-scope conflict on '{name}': "
+                                    f'scope "{scope}" says {label_new}, '
+                                    f'scope "{other_scope}" says {label_other}'
+                                ),
+                                "severity": severity,
+                                "status": "open",
+                            }
+                        )
+                        try:
+                            self._suggestion_queue.put_nowait(cid)
+                        except asyncio.QueueFull:
+                            pass
+                        logger.info(
+                            "Conflict detected (cross-scope): %s=%s vs %s (facts %s, %s)",
+                            name,
+                            label_new,
+                            label_other,
+                            fact_id[:8],
+                            other["id"][:8],
+                        )
 
     async def get_conflicts(
         self, scope: str | None = None, status: str = "open"
     ) -> list[dict[str, Any]]:
-        """Get conflicts, optionally filtered by scope and status."""
+        """Return conflicts, running a fresh entity scan first to catch any missed."""
+        # Run a synchronous scan over all current facts in scope to catch
+        # conflicts that may have been missed by the async worker (e.g. on
+        # first load or after a restart).
+        await self._detect_sync(scope=scope)
         rows = await self.storage.get_conflicts(scope=scope, status=status)
         results = []
         for r in rows:
@@ -837,6 +1198,71 @@ class EngramEngine:
             )
         return results
 
+    async def _detect_sync(self, scope: str | None = None) -> None:
+        """Synchronous pairwise scan — called on-demand from get_conflicts().
+
+        Complements the async worker: catches any conflicts that slipped
+        through (e.g. after a restart or for facts committed before the
+        worker was running).
+        """
+        facts = await self.storage.get_current_facts_in_scope(scope=scope, limit=200)
+        if len(facts) < 2:
+            return
+
+        now = datetime.now(timezone.utc).isoformat()
+        entity_map: dict[str, list[dict[str, Any]]] = {
+            f["id"]: extract_entities(f.get("content") or "") for f in facts
+        }
+
+        for i, a in enumerate(facts):
+            a_nums = {
+                e["name"]: e["value"]
+                for e in entity_map[a["id"]]
+                if e["type"] == "numeric" and e.get("value") is not None
+            }
+            if not a_nums:
+                continue
+
+            for b in facts[i + 1 :]:
+                if a.get("lineage_id") and a.get("lineage_id") == b.get("lineage_id"):
+                    continue
+                if await self.storage.conflict_exists(a["id"], b["id"]):
+                    continue
+
+                b_nums = {
+                    e["name"]: e["value"]
+                    for e in entity_map[b["id"]]
+                    if e["type"] == "numeric" and e.get("value") is not None
+                }
+
+                for name in set(a_nums) & set(b_nums):
+                    val_a = a_nums[name]
+                    val_b = b_nums[name]
+                    if str(val_a) == str(val_b):
+                        continue
+
+                    label_a = "unlimited" if val_a == -1 else str(val_a)
+                    label_b = "unlimited" if val_b == -1 else str(val_b)
+                    severity = "high" if a.get("agent_id") != b.get("agent_id") else "medium"
+                    cid = uuid.uuid4().hex
+                    await self.storage.insert_conflict(
+                        {
+                            "id": cid,
+                            "fact_a_id": a["id"],
+                            "fact_b_id": b["id"],
+                            "detected_at": now,
+                            "detection_tier": "tier2_numeric",
+                            "nli_score": None,
+                            "explanation": (
+                                f"Conflict on '{name}': "
+                                f'"{a["content"][:60]}…" says {label_a}, '
+                                f'"{b["content"][:60]}…" says {label_b}'
+                            ),
+                            "severity": severity,
+                            "status": "open",
+                        }
+                    )
+
     # ── engram_resolve ───────────────────────────────────────────────
 
     async def resolve(
@@ -846,7 +1272,7 @@ class EngramEngine:
         resolution: str,
         winning_claim_id: str | None = None,
     ) -> dict[str, Any]:
-        """Resolve a conflict."""
+        """Resolve a conflict by picking a winner, merging, or dismissing."""
         if resolution_type not in ("winner", "merge", "dismissed"):
             raise ValueError("resolution_type must be 'winner', 'merge', or 'dismissed'.")
 
@@ -859,25 +1285,21 @@ class EngramEngine:
         if resolution_type == "winner":
             if not winning_claim_id:
                 raise ValueError("winning_claim_id is required for 'winner' resolution.")
-            # Close the losing fact's validity window
             loser_id = (
                 conflict["fact_b_id"]
                 if winning_claim_id == conflict["fact_a_id"]
                 else conflict["fact_a_id"]
             )
             await self.storage.close_validity_window(fact_id=loser_id)
-            # Flag the losing agent
             loser_fact = await self.storage.get_fact_by_id(loser_id)
             if loser_fact:
                 await self.storage.increment_agent_flagged(loser_fact["agent_id"])
 
         elif resolution_type == "merge":
-            # Both originals get their windows closed
             await self.storage.close_validity_window(fact_id=conflict["fact_a_id"])
             await self.storage.close_validity_window(fact_id=conflict["fact_b_id"])
 
         elif resolution_type == "dismissed":
-            # Record false positive feedback for NLI calibration
             await self.storage.insert_detection_feedback(conflict_id, "false_positive")
 
         success = await self.storage.resolve_conflict(
@@ -895,10 +1317,7 @@ class EngramEngine:
                 asyncio.ensure_future(
                     self._fire_event(
                         "conflict.resolved",
-                        {
-                            "conflict_id": conflict_id,
-                            "resolution_type": resolution_type,
-                        },
+                        {"conflict_id": conflict_id, "resolution_type": resolution_type},
                     )
                 )
             except Exception:
@@ -1183,20 +1602,7 @@ class EngramEngine:
         reason: str,
         dismissed_by: str | None = None,
     ) -> dict:
-        """Dismiss multiple open conflicts in one call.
-
-        Useful for clearing noise from detection (e.g. false positives flagged
-        by feedback, or old conflicts after a major refactor). Each conflict
-        is dismissed individually; a failure on one does not abort the rest.
-
-        Args:
-            conflict_ids: List of conflict IDs to dismiss (max 100).
-            reason: Human-readable reason recorded on each conflict.
-            dismissed_by: Agent or user performing the dismissal.
-
-        Returns:
-            {total, dismissed, failed, results: [{conflict_id, status, error?}]}
-        """
+        """Dismiss multiple open conflicts in one call (max 100)."""
         if not conflict_ids:
             raise ValueError("conflict_ids cannot be empty.")
         if len(conflict_ids) > 100:
@@ -1237,365 +1643,7 @@ class EngramEngine:
             "results": results,
         }
 
-    # ── Detection Worker (Phase 3) ───────────────────────────────────
-
-    async def _detection_worker(self) -> None:
-        """Background worker consuming from the detection queue.
-
-        Runs up to 3 detections concurrently so a burst of commits from
-        multiple agents doesn't serialize behind a slow NLI call.
-        """
-        logger.info("Detection worker running")
-        semaphore = asyncio.Semaphore(3)
-        active: set[asyncio.Task[None]] = set()
-        try:
-            while True:
-                fact_id = await self._detection_queue.get()
-                task = asyncio.create_task(self._detect_with_semaphore(fact_id, semaphore))
-                active.add(task)
-                task.add_done_callback(active.discard)
-        except asyncio.CancelledError:
-            for t in list(active):
-                t.cancel()
-            for t in list(active):
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):
-                    pass
-
-    async def _detect_with_semaphore(self, fact_id: str, semaphore: asyncio.Semaphore) -> None:
-        async with semaphore:
-            try:
-                await self._run_detection(fact_id)
-            except Exception:
-                logger.exception("Detection error for fact %s", fact_id)
-            finally:
-                self._detection_queue.task_done()
-
-    async def _run_detection(self, fact_id: str) -> None:
-        """Run the tiered detection pipeline for a newly committed fact."""
-        fact = await self.storage.get_fact_by_id(fact_id)
-        if not fact or fact.get("valid_until"):
-            return  # Already superseded or not found
-
-        # Re-generate embedding if missing.
-        # Facts ingested via federation arrive without embeddings because binary
-        # BLOBs are stripped from the JSON federation response. Re-embed locally
-        # so the fact participates in semantic search and Tier 1 NLI detection.
-        if not fact.get("embedding"):
-            try:
-                emb = embeddings.encode(fact["content"])
-                emb_bytes = embeddings.embedding_to_bytes(emb)
-                await self.storage.update_fact_embedding(fact_id, emb_bytes)
-                fact["embedding"] = emb_bytes
-                logger.debug("Re-generated embedding for fact %s (was missing)", fact_id)
-            except Exception:
-                logger.warning(
-                    "Could not re-generate embedding for fact %s; "
-                    "Tier 1 NLI detection will be skipped for this fact.",
-                    fact_id,
-                )
-
-        entities = json.loads(fact.get("entities") or "[]")
-        now = datetime.now(timezone.utc).isoformat()
-
-        # Pre-fetch all fact IDs that already have a conflict with fact_id.
-        # This single query replaces the per-candidate conflict_exists() calls
-        # in Tier 0, Tier 2b, and Tier 2, avoiding N+1 query patterns.
-        existing_conflict_ids = await self.storage.get_conflicting_fact_ids(fact_id)
-
-        # ── Tier 0: Entity exact-match conflicts ─────────────────────
-        tier0_flagged: set[str] = set()
-        for entity in entities:
-            if (
-                entity.get("type") in ("numeric", "config_key", "version")
-                and entity.get("value") is not None
-            ):
-                conflicts = await self.storage.find_entity_conflicts(
-                    entity_name=entity["name"],
-                    entity_type=entity["type"],
-                    entity_value=str(entity["value"]),
-                    scope=fact["scope"],
-                    exclude_id=fact_id,
-                )
-                for c in conflicts:
-                    if c["id"] not in tier0_flagged:
-                        if c["id"] not in existing_conflict_ids:
-                            conflict_id = uuid.uuid4().hex
-                            await self.storage.insert_conflict(
-                                {
-                                    "id": conflict_id,
-                                    "fact_a_id": fact_id,
-                                    "fact_b_id": c["id"],
-                                    "detected_at": now,
-                                    "detection_tier": "tier0_entity",
-                                    "nli_score": None,
-                                    "explanation": (
-                                        f"Entity '{entity['name']}' has conflicting values: "
-                                        f"'{entity['value']}' vs existing value in fact {c['id'][:8]}..."
-                                    ),
-                                    "severity": "high",
-                                    "status": "open",
-                                }
-                            )
-                            try:
-                                self._suggestion_queue.put_nowait(conflict_id)
-                            except asyncio.QueueFull:
-                                logger.warning(
-                                    "Suggestion queue full, skipping suggestion for conflict %s",
-                                    conflict_id[:12],
-                                )
-                            asyncio.ensure_future(self._apply_rules(conflict_id))
-                            asyncio.ensure_future(
-                                self._fire_event(
-                                    "conflict.detected",
-                                    {
-                                        "conflict_id": conflict_id,
-                                        "fact_a_id": fact_id,
-                                        "fact_b_id": c["id"],
-                                        "scope": fact["scope"],
-                                        "detection_tier": "tier0_entity",
-                                    },
-                                )
-                            )
-                            tier0_flagged.add(c["id"])
-
-        # ── Tier 2b: Cross-scope entity detection ────────────────────
-        tier2b_flagged: set[str] = set()
-        for entity in entities:
-            if (
-                entity.get("type") in ("numeric", "config_key", "version", "technology")
-                and entity.get("value") is not None
-            ):
-                cross_matches = await self.storage.find_cross_scope_entity_matches(
-                    entity_name=entity["name"],
-                    entity_type=entity["type"],
-                    entity_value=str(entity["value"]),
-                    exclude_id=fact_id,
-                )
-                for c in cross_matches:
-                    if c["id"] not in tier0_flagged and c["id"] not in tier2b_flagged:
-                        if c["scope"] == fact["scope"]:
-                            continue  # Already handled by Tier 0
-                        if c["id"] not in existing_conflict_ids:
-                            conflict_id = uuid.uuid4().hex
-                            await self.storage.insert_conflict(
-                                {
-                                    "id": conflict_id,
-                                    "fact_a_id": fact_id,
-                                    "fact_b_id": c["id"],
-                                    "detected_at": now,
-                                    "detection_tier": "tier2b_cross_scope",
-                                    "nli_score": None,
-                                    "explanation": (
-                                        f"Cross-scope entity conflict: '{entity['name']}' differs "
-                                        f"between scope '{fact['scope']}' and '{c['scope']}'"
-                                    ),
-                                    "severity": "high",
-                                    "status": "open",
-                                }
-                            )
-                            try:
-                                self._suggestion_queue.put_nowait(conflict_id)
-                            except asyncio.QueueFull:
-                                logger.warning(
-                                    "Suggestion queue full, skipping suggestion for conflict %s",
-                                    conflict_id[:12],
-                                )
-                            asyncio.ensure_future(self._apply_rules(conflict_id))
-                            asyncio.ensure_future(
-                                self._fire_event(
-                                    "conflict.detected",
-                                    {
-                                        "conflict_id": conflict_id,
-                                        "fact_a_id": fact_id,
-                                        "fact_b_id": c["id"],
-                                        "scope": fact["scope"],
-                                        "detection_tier": "tier2b_cross_scope",
-                                    },
-                                )
-                            )
-                            tier2b_flagged.add(c["id"])
-
-        # ── Tier 2: Numeric and temporal rules (parallel with Tier 1) ────
-        tier2_flagged: set[str] = set()
-        scope_facts = await self.storage.get_current_facts_in_scope(scope=fact["scope"], limit=50)
-        for candidate in scope_facts:
-            if candidate["id"] == fact_id:
-                continue
-            if candidate["id"] in tier0_flagged or candidate["id"] in tier2b_flagged:
-                continue
-            c_entities = json.loads(candidate.get("entities") or "[]")
-            for e_new in entities:
-                if e_new.get("type") != "numeric" or e_new.get("value") is None:
-                    continue
-                for e_cand in c_entities:
-                    if e_cand.get("type") != "numeric" or e_cand.get("value") is None:
-                        continue
-                    if e_new["name"] == e_cand["name"] and str(e_new["value"]) != str(
-                        e_cand["value"]
-                    ):
-                        if candidate["id"] not in tier2_flagged:
-                            if candidate["id"] not in existing_conflict_ids:
-                                conflict_id = uuid.uuid4().hex
-                                await self.storage.insert_conflict(
-                                    {
-                                        "id": conflict_id,
-                                        "fact_a_id": fact_id,
-                                        "fact_b_id": candidate["id"],
-                                        "detected_at": now,
-                                        "detection_tier": "tier2_numeric",
-                                        "nli_score": None,
-                                        "explanation": (
-                                            f"Numeric conflict: '{e_new['name']}' = {e_new['value']} "
-                                            f"vs {e_cand['value']}"
-                                        ),
-                                        "severity": "high",
-                                        "status": "open",
-                                    }
-                                )
-                                try:
-                                    self._suggestion_queue.put_nowait(conflict_id)
-                                except asyncio.QueueFull:
-                                    logger.warning(
-                                        "Suggestion queue full, skipping suggestion for conflict %s",
-                                        conflict_id[:12],
-                                    )
-                                asyncio.ensure_future(self._apply_rules(conflict_id))
-                                asyncio.ensure_future(
-                                    self._fire_event(
-                                        "conflict.detected",
-                                        {
-                                            "conflict_id": conflict_id,
-                                            "fact_a_id": fact_id,
-                                            "fact_b_id": candidate["id"],
-                                            "scope": fact["scope"],
-                                            "detection_tier": "tier2_numeric",
-                                        },
-                                    )
-                                )
-                                tier2_flagged.add(candidate["id"])
-
-        # ── Tier 1: NLI cross-encoder ────────────────────────────────
-        # Gather candidates via three parallel paths:
-        # Path A: embedding-similar facts in scope (top 20)
-        # Path B: FTS5 BM25 lexical matches (top 10)
-        # Path C: entity-overlapping facts (already found above)
-        already_flagged = tier0_flagged | tier2b_flagged | tier2_flagged
-
-        # Path A: embedding similarity
-        emb_candidates: dict[str, dict] = {}
-        if fact.get("embedding"):
-            fact_emb = embeddings.bytes_to_embedding(fact["embedding"])
-            scored_emb = []
-            for c in scope_facts:
-                if c["id"] == fact_id or c["id"] in already_flagged:
-                    continue
-                if c.get("embedding"):
-                    c_emb = embeddings.bytes_to_embedding(c["embedding"])
-                    sim = embeddings.cosine_similarity(fact_emb, c_emb)
-                    scored_emb.append((sim, c))
-            scored_emb.sort(key=lambda x: x[0], reverse=True)
-            for _, c in scored_emb[:20]:
-                emb_candidates[c["id"]] = c
-
-        # Path B: FTS5 lexical matches
-        try:
-            fts_rowids = await self.storage.fts_search(fact["content"][:200], limit=10)
-            if fts_rowids:
-                fts_facts = await self.storage.get_facts_by_rowids(fts_rowids)
-                for c in fts_facts:
-                    if c["id"] != fact_id and c["id"] not in already_flagged:
-                        emb_candidates.setdefault(c["id"], c)
-        except Exception:
-            pass  # FTS may fail on complex content
-
-        # Union, dedup, cap at 30
-        nli_candidates = list(emb_candidates.values())[:30]
-
-        if not nli_candidates:
-            return
-
-        # Run NLI on candidates
-        nli_model = self._get_nli_model()
-        if nli_model is None:
-            return  # NLI model not available
-
-        for candidate in nli_candidates:
-            try:
-                scores = nli_model.predict(
-                    [(fact["content"], candidate["content"])],
-                    apply_softmax=True,
-                )
-                if hasattr(scores, "tolist"):
-                    scores = scores.tolist()
-                if isinstance(scores[0], list):
-                    scores = scores[0]
-
-                # scores: [contradiction, entailment, neutral]
-                contradiction_score = float(scores[0])
-                entailment_score = float(scores[1])
-
-                # Stale supersession: same lineage + high entailment
-                if (
-                    fact.get("lineage_id")
-                    and candidate.get("lineage_id") == fact["lineage_id"]
-                    and entailment_score > 0.85
-                ):
-                    await self.storage.close_validity_window(fact_id=candidate["id"])
-                    continue
-
-                if contradiction_score > self._nli_threshold_high:
-                    already = await self.storage.conflict_exists(fact_id, candidate["id"])
-                    if not already:
-                        severity = (
-                            "high"
-                            if fact.get("engineer") != candidate.get("engineer")
-                            else "medium"
-                        )
-                        conflict_id = uuid.uuid4().hex
-                        await self.storage.insert_conflict(
-                            {
-                                "id": conflict_id,
-                                "fact_a_id": fact_id,
-                                "fact_b_id": candidate["id"],
-                                "detected_at": now,
-                                "detection_tier": "tier1_nli",
-                                "nli_score": contradiction_score,
-                                "explanation": (
-                                    f"Semantic contradiction (NLI score: {contradiction_score:.2f}): "
-                                    f'"{fact["content"][:80]}..." vs '
-                                    f'"{candidate["content"][:80]}..."'
-                                ),
-                                "severity": severity,
-                                "status": "open",
-                            }
-                        )
-                        try:
-                            self._suggestion_queue.put_nowait(conflict_id)
-                        except asyncio.QueueFull:
-                            logger.warning(
-                                "Suggestion queue full, skipping suggestion for conflict %s",
-                                conflict_id[:12],
-                            )
-                        asyncio.ensure_future(self._apply_rules(conflict_id))
-                        asyncio.ensure_future(
-                            self._fire_event(
-                                "conflict.detected",
-                                {
-                                    "conflict_id": conflict_id,
-                                    "fact_a_id": fact_id,
-                                    "fact_b_id": candidate["id"],
-                                    "scope": fact["scope"],
-                                    "detection_tier": "tier1_nli",
-                                },
-                            )
-                        )
-
-            except Exception:
-                logger.exception("NLI inference failed for pair %s / %s", fact_id, candidate["id"])
-
-    # ── Suggestion Worker (async, post-detection) ────────────────────
+    # ── Suggestion Worker ────────────────────────────────────────────
 
     async def _suggestion_worker(self) -> None:
         """Consume conflict IDs and generate LLM resolution suggestions."""
@@ -1620,7 +1668,7 @@ class EngramEngine:
         if not conflict or conflict["status"] != "open":
             return
         if conflict.get("suggested_resolution"):
-            return  # Already has a suggestion
+            return  # already has a suggestion
 
         facts_by_id = await self.storage.get_facts_by_ids(
             [conflict["fact_a_id"], conflict["fact_b_id"]]
@@ -1638,14 +1686,12 @@ class EngramEngine:
     # ── 72-hour escalation loop ──────────────────────────────────────
 
     async def _escalation_loop(self) -> None:
-        """Every hour: auto-resolve conflicts that have been open for 72h+ without review."""
+        """Every hour: auto-resolve conflicts open for 72h+ without review."""
         while True:
             try:
-                await asyncio.sleep(3600)  # check every hour
+                await asyncio.sleep(3600)
                 stale = await self.storage.get_stale_open_conflicts(older_than_hours=72)
                 if stale:
-                    # Batch-fetch all referenced facts in one query instead of
-                    # two get_fact_by_id() calls per conflict (N+1 avoidance).
                     all_ids = list(
                         {c["fact_a_id"] for c in stale} | {c["fact_b_id"] for c in stale}
                     )
@@ -1670,14 +1716,7 @@ class EngramEngine:
         fact_a: dict[str, Any] | None = None,
         fact_b: dict[str, Any] | None = None,
     ) -> None:
-        """Auto-resolve a stale conflict by preferring the more recent fact.
-
-        Closes the older fact's validity window and records a clear audit trail
-        indicating this was a system action, not a human decision.
-
-        fact_a / fact_b may be pre-fetched by the caller (escalation loop batch)
-        to avoid repeated get_fact_by_id() queries.
-        """
+        """Auto-resolve a stale conflict by preferring the more recent fact."""
         if fact_a is None:
             fact_a = await self.storage.get_fact_by_id(conflict["fact_a_id"])
         if fact_b is None:
@@ -1685,13 +1724,9 @@ class EngramEngine:
         if not fact_a or not fact_b:
             return
 
-        # Prefer the more recently committed fact
         a_time = fact_a.get("committed_at", "")
         b_time = fact_b.get("committed_at", "")
-        if a_time >= b_time:
-            winner, loser = fact_a, fact_b
-        else:
-            winner, loser = fact_b, fact_a
+        winner, loser = (fact_a, fact_b) if a_time >= b_time else (fact_b, fact_a)
 
         await self.storage.close_validity_window(fact_id=loser["id"])
         await self.storage.increment_agent_flagged(loser["agent_id"])
@@ -1727,6 +1762,39 @@ class EngramEngine:
                 logger.warning("NLI model not available. Tier 1 detection disabled.")
                 return None
         return self._nli_model
+
+    # ── Conflict Risk Estimation ─────────────────────────────────────
+
+    def _estimate_conflict_risk(self, content: str, scope: str) -> str:
+        """Return a rough conflict risk level ('low', 'medium', 'high') for a commit.
+
+        Uses lightweight heuristics — no ML, no DB queries — so it runs
+        synchronously in the commit hot path without adding latency.
+        """
+        content_lower = content.lower()
+        # High-risk: numeric values, config keys, version strings, or
+        # explicit contradiction language tend to conflict more often.
+        high_signals = [
+            any(c.isdigit() for c in content),  # contains a number
+            "version" in content_lower,
+            "config" in content_lower,
+            "deprecated" in content_lower,
+            "removed" in content_lower,
+            "changed" in content_lower,
+            "now uses" in content_lower,
+            "switched to" in content_lower,
+        ]
+        medium_signals = [
+            "should" in content_lower,
+            "must" in content_lower,
+            "always" in content_lower,
+            "never" in content_lower,
+        ]
+        if sum(high_signals) >= 1:
+            return "high"
+        if sum(medium_signals) >= 1:
+            return "medium"
+        return "low"
 
     # ── Corroboration Detection (Phase 2) ────────────────────────────
 
@@ -1776,6 +1844,45 @@ class EngramEngine:
                 )
         except Exception:
             logger.exception("Corroboration check failed for fact %s", fact_id)
+
+    # ── Startup entity backfill ──────────────────────────────────────
+
+    async def _entity_backfill(self) -> None:
+        """Re-extract and store entities for facts that have an empty entities column.
+
+        Facts committed before entity extraction was introduced (or before new
+        patterns were added) have entities = NULL or '[]'. This one-time startup
+        task fixes them so Tier 0/2 conflict detection can compare them against
+        newly committed facts.
+
+        After updating each fact's entities, the fact is queued for detection so
+        any conflicts against already-stored facts are surfaced immediately.
+        """
+        # Brief delay so the detection worker is warm before we flood the queue.
+        await asyncio.sleep(2)
+        offset = 0
+        batch = 200
+        total_updated = 0
+        while True:
+            facts = await self.storage.get_facts_with_empty_entities(limit=batch, offset=offset)
+            if not facts:
+                break
+            for fact in facts:
+                try:
+                    new_entities = extract_entities(fact["content"])
+                    if not new_entities:
+                        continue
+                    await self.storage.update_fact_entities(fact["id"], json.dumps(new_entities))
+                    try:
+                        self._detection_queue.put_nowait(fact["id"])
+                    except asyncio.QueueFull:
+                        pass
+                    total_updated += 1
+                except Exception:
+                    logger.exception("Entity backfill failed for fact %s", fact["id"])
+            offset += batch
+        if total_updated:
+            logger.info("Entity backfill complete: updated %d facts", total_updated)
 
     # ── Periodic TTL expiry ──────────────────────────────────────────
 
@@ -2339,6 +2446,237 @@ class EngramEngine:
             to_ts=to_ts,
             limit=limit,
         )
+
+    # ── Invite key lifecycle ─────────────────────────────────────────
+
+    async def rotate_invite_key(
+        self,
+        *,
+        expires_days: int = 90,
+        uses: int = 10,
+        grace_minutes: int = 15,
+        reason: str | None = None,
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        """Rotate the workspace invite key with audit trail and webhook notification.
+
+        Soft-revokes all active keys (with an optional grace period so agents
+        mid-session can finish their work), bumps the workspace key generation,
+        generates a fresh invite key, and fires an ``invite_key.rotated`` webhook
+        event for downstream consumers.
+
+        Args:
+            expires_days: Validity period for the new key in days (default 90).
+            uses: Maximum number of times the new key can be consumed (default 10).
+            grace_minutes: How long revoked keys remain valid for *existing* sessions
+                (not new joins). 0 = immediate revocation (default 15).
+            reason: Optional human-readable reason stored in the audit log.
+            actor: Identity of the person triggering the rotation (for audit).
+
+        Returns:
+            dict with ``invite_key``, ``new_generation``, ``old_generation``,
+            and ``grace_until`` (ISO string or None).
+
+        Raises:
+            ValueError: If the workspace is not in team mode.
+            PermissionError: If the caller is not the workspace creator.
+        """
+        import time
+
+        from engram.workspace import (
+            WorkspaceConfig,
+            generate_invite_key,
+            read_workspace,
+            write_workspace,
+        )
+
+        ws = read_workspace()
+        if ws is None or not ws.db_url:
+            raise ValueError(
+                "No team workspace configured. rotate_invite_key is only usable in team mode."
+            )
+        if not ws.is_creator:
+            raise PermissionError(
+                "Invite key rotation is restricted to the workspace creator. "
+                "Only the founder who ran engram_init may perform this operation."
+            )
+
+        old_gen = ws.key_generation
+
+        # Soft-revoke all active keys (existing sessions continue during grace period).
+        await self.storage.revoke_all_invite_keys(
+            ws.engram_id, grace_minutes=grace_minutes, reason=reason
+        )
+
+        # Bump the generation counter — this is what _check_key_generation observes.
+        new_gen = await self.storage.bump_key_generation(ws.engram_id)
+
+        # Generate and store the new invite key.
+        invite_key, key_hash = generate_invite_key(
+            db_url=ws.db_url,
+            engram_id=ws.engram_id,
+            expires_days=expires_days,
+            uses_remaining=uses,
+            schema=ws.schema,
+            key_generation=new_gen,
+        )
+        expires_ts = datetime.fromtimestamp(
+            time.time() + expires_days * 86400, tz=timezone.utc
+        ).isoformat()
+        await self.storage.insert_invite_key(
+            key_hash=key_hash,
+            engram_id=ws.engram_id,
+            expires_at=expires_ts,
+            uses_remaining=uses,
+        )
+
+        # Persist updated generation to local workspace.json.
+        updated_config = WorkspaceConfig(
+            engram_id=ws.engram_id,
+            db_url=ws.db_url,
+            schema=ws.schema,
+            anonymous_mode=ws.anonymous_mode,
+            anon_agents=ws.anon_agents,
+            key_generation=new_gen,
+            is_creator=True,
+        )
+        write_workspace(updated_config)
+
+        grace_until: str | None = None
+        if grace_minutes > 0:
+            from datetime import timedelta
+
+            grace_until = (
+                datetime.now(timezone.utc) + timedelta(minutes=grace_minutes)
+            ).isoformat()
+
+        # Audit log entry — no PII.
+        import json as _json
+
+        await self._audit(
+            "key_rotation",
+            extra=_json.dumps(
+                {
+                    "old_generation": old_gen,
+                    "new_generation": new_gen,
+                    "grace_minutes": grace_minutes,
+                    "grace_until": grace_until,
+                    "reason": reason or "",
+                    "actor": actor or "unknown",
+                }
+            ),
+        )
+
+        # Webhook notification via existing delivery worker.
+        asyncio.ensure_future(
+            self._fire_event(
+                "invite_key.rotated",
+                {
+                    "workspace_id": ws.engram_id,
+                    "old_generation": old_gen,
+                    "new_generation": new_gen,
+                    "rotated_by": actor or "unknown",
+                    "grace_until": grace_until,
+                    "reason": reason or "",
+                },
+            )
+        )
+
+        logger.warning(
+            "Invite key rotated: workspace=%s old_gen=%d new_gen=%d grace_minutes=%d actor=%s",
+            ws.engram_id,
+            old_gen,
+            new_gen,
+            grace_minutes,
+            actor or "unknown",
+        )
+
+        return {
+            "invite_key": invite_key,
+            "old_generation": old_gen,
+            "new_generation": new_gen,
+            "grace_until": grace_until,
+        }
+
+    async def get_rotation_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return invite key rotation audit entries for this workspace.
+
+        Ordered most-recent first. Capped at 200 entries.
+        """
+        from engram.workspace import read_workspace
+
+        ws = read_workspace()
+        if ws is None:
+            return []
+        engram_id = ws.engram_id if ws.db_url else "local"
+        return await self.storage.get_key_rotation_history(engram_id, limit=max(1, min(limit, 200)))
+
+    # ── GDPR subject erasure ─────────────────────────────────────────
+
+    async def gdpr_erase_agent(
+        self,
+        agent_id: str,
+        mode: Literal["soft", "hard"],
+        *,
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        """Erase all personal data for a given agent from this workspace.
+
+        Gated to workspace creators only.  Use ``mode='soft'`` to redact
+        attribution fields while keeping fact content intact, or
+        ``mode='hard'`` to also wipe fact content, close validity windows,
+        and cascade-dismiss related open conflicts.
+
+        Args:
+            agent_id: The agent whose data should be erased.
+            mode: ``'soft'`` or ``'hard'``.
+            actor: Identity of the person triggering the erasure (for audit).
+
+        Returns:
+            A summary dict with counts of affected rows per table.
+
+        Raises:
+            ValueError: If agent_id is empty or mode is invalid.
+            PermissionError: If the caller is not a workspace creator.
+        """
+        if not agent_id or not agent_id.strip():
+            raise ValueError("agent_id must be a non-empty string.")
+        if mode not in ("soft", "hard"):
+            raise ValueError("mode must be 'soft' or 'hard'.")
+
+        # Creator-only gate — read local workspace.json
+        try:
+            from engram.workspace import read_workspace
+
+            ws = read_workspace()
+            if ws is None or not ws.is_creator:
+                raise PermissionError(
+                    "GDPR erasure is restricted to the workspace creator. "
+                    "Only the founder who ran engram_init may perform this operation."
+                )
+        except PermissionError:
+            raise
+        except Exception as exc:
+            raise PermissionError(f"Unable to verify workspace creator status: {exc}") from exc
+
+        if mode == "soft":
+            stats = await self.storage.gdpr_soft_erase_agent(agent_id)
+        else:
+            stats = await self.storage.gdpr_hard_erase_agent(agent_id)
+
+        await self._audit(
+            "gdpr_erase",
+            agent_id=None,  # do not store the erased agent_id in the audit trail
+            extra=f'{{"mode":"{mode}","facts_updated":{stats["facts_updated"]},'
+            f'"conflicts_closed":{stats["conflicts_closed"]},'
+            f'"actor":"{actor or "unknown"}"}}',
+        )
+
+        return {
+            "erased_agent_id": agent_id,
+            "mode": mode,
+            "stats": stats,
+        }
 
 
 def _content_hash(content: str) -> str:

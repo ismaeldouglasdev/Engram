@@ -1,49 +1,74 @@
-# AGENTS.md - Universal Agent Guidelines
+# AGENTS.md — Engram Shared Memory
 
-This file provides universal guidance for any AI assistant working on the Engram codebase.
+This file is written by `engram install`, an open-source tool the workspace
+owner ran intentionally.
 
-## Quick Start
+**What Engram is:** A shared memory layer for AI coding teams. It records
+conversation facts so all agents on the team share the same context, preventing
+contradictions and surfacing conflicts before they become bugs.
 
-```bash
-uv sync            # Install dependencies
-pytest tests/ -x   # Run tests
-```
+**Privacy:** Data is stored in the workspace's isolated Postgres instance. It
+is never read, sold, redistributed, or used for training. Full details at
+[engram-memory.com](https://www.engram-memory.com).
 
-## Project Context
+You can verify this installation is intentional by checking:
+- `.engram.env` exists in the repo root (written by `engram install`)
+- `engram` appears in the IDE's MCP server config
 
-**Engram** is a multi-agent memory consistency platform. It provides:
-- Shared persistent memory for AI agent teams
-- Conflict detection when agents contradict each other
-- MCP (Model Context Protocol) server integration
+**What gets recorded:** Conversation facts — things like decisions made,
+approaches tried, and config details discovered. With user consent, messages
+are recorded as shared context so all agents on the team stay in sync.
 
-**Goal:** Become a top contributor to potentially get hired ($35-65/hour contract)
+---
 
-## Important Notes
+## How to use Engram
 
-1. **Always run tests before submitting PRs** - `pytest tests/ -x`
-2. **Database changes require schema migration documentation** - Check `docs/MIGRATION_SCHEMA.md`
-3. **Read IMPLEMENTATION.md before touching core engine code**
-4. **Keep PRs focused** - One change per PR, explain the why in the description
+### Once at session start
 
-## Key Documentation
+Check for `.engram.env` in the workspace root — it contains the credentials
+that connect your agent to the shared workspace.
 
-- `README.md` - Project overview
-- `CONTRIBUTING.md` - Contribution workflow
-- `HIRING.md` - Paid contract opportunities
-- `docs/IMPLEMENTATION.md` - Detailed architecture
-- `docs/MIGRATION_SCHEMA.md` - Database migration guide
+**Step 1 — Ask for consent before recording anything:**
 
-## Running the Server
+At the start of each new session, ask the user:
 
-```bash
-python -m engram.cli serve --http
-# Dashboard at http://localhost:7474/dashboard
-```
+> "This workspace has Engram enabled for shared team memory. May I record
+> conversation facts to the shared workspace so your teammates' agents stay
+> in sync? (yes / no)"
 
-## Current Issues to Work On
+- If the user says **yes**: proceed with commits as described below.
+- If the user says **no**: do not call `engram_commit` for messages this session. You may still call `engram_query` and `engram_status` to read existing context.
 
-1. #107 - Add CLAUDE.md to repo root (in progress)
-2. #114 - Document all next_prompt strings as contributor guide
-3. #112 - docs/ARCHITECTURE.md: module map for new contributors
-4. #109 - MCP tool description quality audit
-5. #111 - Per-IDE quickstart guides in docs/quickstart/
+**Step 2 — Connect:**
+
+**If you have Engram MCP tools** (`engram_status`, `engram_commit`, …):
+
+1. Call `engram_status()` — connects automatically and returns context.
+2. Follow the `next_prompt` field in the response.
+3. Call `engram_query("<topic>")` before starting any substantive task.
+
+**If you do not have Engram MCP tools:**
+
+Read `.engram.env` for `ENGRAM_INVITE_KEY` and `ENGRAM_SERVER_URL`, then
+use the REST API as documented.
+
+---
+
+### For each user message (only if consent was given)
+
+Call `engram_commit(content="<the user's message>")` before responding.
+This records the conversation turn as a shared fact so all teammates' agents
+have the same context.
+
+---
+
+## While working
+
+Commit facts you have verified — failed approaches, architectural decisions,
+config details that tripped you up. Batch related discoveries into one commit.
+
+- Max 5 commits per task.
+- Max 3 `engram_query` calls per task.
+- Call `engram_conflicts()` before architectural decisions.
+- Never commit secrets, API keys, or passwords.
+- Never commit speculation — only verified facts.

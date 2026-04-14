@@ -18,7 +18,8 @@ def _render_landing() -> str:
   <meta name="description" content="Shared memory for your team's agents. Works with any MCP-compatible IDE. Zero setup. All data encrypted, never shared, always yours.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -84,6 +85,11 @@ def _render_landing() -> str:
       font-size: 24px; font-weight: 700; color: var(--emerald-400);
       text-decoration: none; letter-spacing: -0.03em;
       display: flex; align-items: center; gap: 10px;
+    }
+    .logo-memory {
+      font-size: 13px; font-weight: 400; color: rgba(52, 211, 153, 0.5);
+      letter-spacing: 0.12em; text-transform: uppercase;
+      align-self: flex-end; margin-bottom: 2px; margin-left: 2px;
     }
     .logo-dot {
       width: 8px; height: 8px; border-radius: 50%;
@@ -429,7 +435,8 @@ def _render_landing() -> str:
       border-top: 1px solid var(--border-subtle);
     }
     .footer-links { display: flex; gap: 28px; justify-content: center; align-items: center; margin-bottom: 16px; }
-    .footer-logo { font-size: 18px; font-weight: 700; color: var(--emerald-400); letter-spacing: -0.02em; }
+    .footer-logo { font-size: 18px; font-weight: 700; color: var(--emerald-400); letter-spacing: -0.02em; display: inline-flex; align-items: baseline; gap: 6px; }
+    .footer-logo-memory { font-size: 10px; font-weight: 400; color: rgba(52, 211, 153, 0.45); letter-spacing: 0.12em; text-transform: uppercase; }
     .footer-links a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; transition: color 0.25s; }
     .footer-links a:hover { color: var(--emerald-400); }
     .footer-tagline { font-size: 13px; color: var(--text-muted); font-style: italic; }
@@ -561,7 +568,7 @@ def _render_landing() -> str:
 <header>
   <div class="container">
     <div class="header-content">
-      <a href="/" class="logo"><span class="logo-dot"></span>engram</a>
+      <a href="/" class="logo"><span class="logo-dot"></span>engram<span class="logo-memory">memory</span></a>
       <nav class="nav-links">
         <a href="#install">Install</a>
         <a href="/dashboard">Dashboard</a>
@@ -603,12 +610,28 @@ def _render_landing() -> str:
   <!-- Install -->
   <div class="card reveal" id="install">
     <div class="section-label">Get started</div>
-    <div class="section-title">One command. Zero config.</div>
-    <div class="section-desc">Install Engram, restart your IDE, and ask your agent to set up your team. That's it.</div>
+    <div class="section-title">Up and running in minutes.</div>
+    <div class="section-desc">Create an account, run the installer, and ask your agent to finish setup. That's it.</div>
 
     <div class="install-steps">
       <div class="install-step">
         <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-title">Create an account</div>
+          <div class="step-desc" style="margin-top:8px;font-size:14px;color:var(--t2);line-height:1.6;">
+            Sign up at the dashboard, then create a new workspace or join an existing one with an invite key from a teammate.
+          </div>
+          <a href="/dashboard" class="btn-step-cta" style="display:inline-block;margin-top:12px;
+            padding:9px 20px;background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.25);
+            border-radius:9px;color:var(--em4);font-size:13px;font-weight:600;text-decoration:none;
+            transition:background 0.2s;" onmouseover="this.style.background='rgba(52,211,153,0.18)'"
+            onmouseout="this.style.background='rgba(52,211,153,0.1)'">
+            Sign up at engram-memory.com →
+          </a>
+        </div>
+      </div>
+      <div class="install-step">
+        <div class="step-num">2</div>
         <div class="step-content">
           <div class="step-title">Run the installer</div>
           <div class="platform-tabs">
@@ -617,31 +640,31 @@ def _render_landing() -> str:
             <button class="tab" onclick="switchTab('cmd')">CMD</button>
           </div>
           <div class="code-block" id="tab-mac">
-            <button class="copy-btn" onclick="copyCode('install-mac')">Copy</button>
-            <div id="install-mac">curl -fsSL https://engram-us.com/install | sh</div>
+            <button class="copy-btn" onclick="copyCode('install-mac', event)">Copy</button>
+            <div id="install-mac">curl -fsSL https://engram-memory.com/install | sh</div>
           </div>
           <div class="code-block" id="tab-ps" style="display:none;">
-            <button class="copy-btn" onclick="copyCode('install-ps')">Copy</button>
-            <div id="install-ps">irm https://engram-us.com/install.ps1 | iex</div>
+            <button class="copy-btn" onclick="copyCode('install-ps', event)">Copy</button>
+            <div id="install-ps">irm https://engram-memory.com/install.ps1 | iex</div>
           </div>
           <div class="code-block" id="tab-cmd" style="display:none;">
-            <button class="copy-btn" onclick="copyCode('install-cmd')">Copy</button>
-            <div id="install-cmd">curl -fsSL https://engram-us.com/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</div>
+            <button class="copy-btn" onclick="copyCode('install-cmd', event)">Copy</button>
+            <div id="install-cmd">curl -fsSL https://engram-memory.com/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</div>
           </div>
-        </div>
-      </div>
-      <div class="install-step">
-        <div class="step-num">2</div>
-        <div class="step-content">
-          <div class="step-title">Restart your IDE</div>
         </div>
       </div>
       <div class="install-step">
         <div class="step-num">3</div>
         <div class="step-content">
+          <div class="step-title">Restart your IDE</div>
+        </div>
+      </div>
+      <div class="install-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
           <div class="step-title">Ask your agent</div>
           <div class="code-block">
-            <button class="copy-btn" onclick="copyCode('setup-prompt')">Copy</button>
+            <button class="copy-btn" onclick="copyCode('setup-prompt', event)">Copy</button>
             <div id="setup-prompt">"Set up Engram for my team"</div>
           </div>
         </div>
@@ -705,7 +728,7 @@ def _render_landing() -> str:
 <footer>
   <div class="container">
     <div class="footer-links">
-      <span class="footer-logo">engram</span>
+      <span class="footer-logo">engram<span class="footer-logo-memory">memory</span></span>
       <a href="https://github.com/Agentscreator/Engram" target="_blank">GitHub</a>
       <a href="https://github.com/Agentscreator/Engram/blob/main/LICENSE" target="_blank">Apache 2.0</a>
       <a href="https://discord.gg/2SQ34TfA" target="_blank">Discord</a>
@@ -818,10 +841,10 @@ function switchTab(platform) {
 
 // ── Copy helper ────────────────────────────────────────────────────
 let toastTimeout;
-function copyCode(id) {
+function copyCode(id, evt) {
+  const btn = (evt && evt.currentTarget) || document.querySelector('#' + id).closest('.code-block').querySelector('.copy-btn');
   const text = document.getElementById(id).textContent.trim();
   navigator.clipboard.writeText(text).then(() => {
-    const btn = event.target;
     const original = btn.textContent;
     btn.textContent = '✓ Copied';
     btn.classList.add('copied');
@@ -837,6 +860,20 @@ function copyCode(id) {
       block.style.boxShadow = '0 0 20px rgba(52, 211, 153, 0.1)';
       setTimeout(() => { block.style.borderColor = ''; block.style.boxShadow = ''; }, 800);
     }
+  }).catch(() => {
+    // Fallback for browsers that block clipboard API (e.g. non-HTTPS)
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+    document.body.removeChild(ta);
+    const original = btn.textContent;
+    btn.textContent = '✓ Copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 2000);
+    const toast = document.getElementById('copy-toast');
+    clearTimeout(toastTimeout);
+    toast.classList.add('show');
+    toastTimeout = setTimeout(() => toast.classList.remove('show'), 2500);
   });
 }
 

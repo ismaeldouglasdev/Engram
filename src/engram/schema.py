@@ -5,6 +5,17 @@ Schema version 4 adds:
 - invite_keys table (for join flow)
 - workspace_id column on facts, conflicts, agents (multi-tenancy)
 
+Schema version 10 adds:
+- facts_au trigger for SQLite FTS5 consistency on content/keywords updates
+  (required by the GDPR subject-erasure hard-erase path)
+
+Schema version 11 adds:
+- invite_keys.revoked_at: ISO timestamp of soft-revocation (NULL = active)
+- invite_keys.grace_until: ISO timestamp until which revoked keys still allow
+  existing sessions to continue (grace period for key rotation)
+- invite_keys.rotation_reason: optional human-readable reason for revocation
+- Index on (engram_id, grace_until) for efficient grace-period queries
+
 Two schemas are maintained:
 - SCHEMA_SQL: SQLite (local mode, aiosqlite)
 - POSTGRES_SCHEMA_SQL: PostgreSQL (team mode, asyncpg)
@@ -168,7 +179,11 @@ CREATE TABLE IF NOT EXISTS facts (
     workspace_id     TEXT NOT NULL DEFAULT 'local',
     corroborating_agents INTEGER NOT NULL DEFAULT 0,
     durability       TEXT NOT NULL DEFAULT 'durable',
-    query_hits       INTEGER NOT NULL DEFAULT 0
+    query_hits       INTEGER NOT NULL DEFAULT 0,
+    pinned           INTEGER NOT NULL DEFAULT 0,
+    pinned_at        TEXT,
+    endorsements     INTEGER NOT NULL DEFAULT 0,
+    downvotes        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_validity     ON facts(scope, valid_until);
@@ -192,6 +207,15 @@ CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
     INSERT INTO facts_fts(facts_fts, rowid, content, scope, keywords)
     VALUES ('delete', old.rowid, old.content, old.scope, old.keywords);
 END;
+
+-- Keep FTS5 shadow table in sync when content/keywords are updated (e.g. GDPR erasure).
+CREATE TRIGGER IF NOT EXISTS facts_au
+    AFTER UPDATE OF content, scope, keywords ON facts BEGIN
+        INSERT INTO facts_fts(facts_fts, rowid, content, scope, keywords)
+        VALUES ('delete', old.rowid, old.content, old.scope, old.keywords);
+        INSERT INTO facts_fts(rowid, content, scope, keywords)
+        VALUES (new.rowid, new.content, new.scope, new.keywords);
+    END;
 
 -- Conflict tracking
 CREATE TABLE IF NOT EXISTS conflicts (
@@ -264,13 +288,19 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 
 -- Invite keys (db_url is encrypted into the key token, NOT stored here)
+-- revoked_at/grace_until support the key rotation lifecycle (schema v11).
 CREATE TABLE IF NOT EXISTS invite_keys (
     key_hash         TEXT PRIMARY KEY,
     engram_id        TEXT NOT NULL REFERENCES workspaces(engram_id),
     created_at       TEXT NOT NULL,
     expires_at       TEXT,
-    uses_remaining   INTEGER
+    uses_remaining   INTEGER,
+    revoked_at       TEXT,
+    grace_until      TEXT,
+    rotation_reason  TEXT
 );
+
+CREATE INDEX IF NOT EXISTS invite_keys_grace ON invite_keys(engram_id, grace_until);
 
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -468,13 +498,19 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 
 -- Invite keys (db_url encrypted into token, NOT stored here)
+-- revoked_at/grace_until support the key rotation lifecycle (schema v11).
 CREATE TABLE IF NOT EXISTS invite_keys (
     key_hash         TEXT PRIMARY KEY,
     engram_id        TEXT NOT NULL REFERENCES workspaces(engram_id),
     created_at       TIMESTAMPTZ NOT NULL,
     expires_at       TIMESTAMPTZ,
-    uses_remaining   INTEGER
+    uses_remaining   INTEGER,
+    revoked_at       TIMESTAMPTZ,
+    grace_until      TIMESTAMPTZ,
+    rotation_reason  TEXT
 );
+
+CREATE INDEX IF NOT EXISTS invite_keys_grace ON invite_keys(engram_id, grace_until);
 
 -- Webhooks (event subscriptions)
 CREATE TABLE IF NOT EXISTS webhooks (

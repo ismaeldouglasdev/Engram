@@ -9,7 +9,6 @@ point-in-time, expiring facts.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -51,6 +50,7 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         resolved_conflicts = await storage.count_conflicts("resolved")
         agents = await storage.get_agents()
         expiring = await storage.get_expiring_facts(days_ahead=7)
+        recent_activity = await storage.get_fact_timeline(limit=10)
         return HTMLResponse(
             _render_index(
                 facts_count=facts_count,
@@ -60,6 +60,7 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
                 agents=agents,
                 expiring_count=len(expiring),
                 workspace_error=workspace_error,
+                recent_activity=recent_activity,
             )
         )
 
@@ -101,11 +102,13 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         fact_type = request.query_params.get("fact_type")
         as_of = request.query_params.get("as_of")
         search_query = request.query_params.get("q", "").strip()
+        offset = int(request.query_params.get("offset", 0))
+        limit = int(request.query_params.get("limit", 100))
 
         # Use FTS search if query provided
         if search_query:
             try:
-                fts_rowids = await storage.fts_search(search_query, limit=50)
+                fts_rowids = await storage.fts_search(search_query, limit=limit, offset=offset)
                 if fts_rowids:
                     facts = await storage.get_facts_by_rowids(fts_rowids)
                 else:
@@ -113,24 +116,46 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
             except Exception:
                 # FTS fallback - use regular query
                 facts = await storage.get_current_facts_in_scope(
-                    scope=scope, fact_type=fact_type, as_of=as_of, limit=100
+                    scope=scope, fact_type=fact_type, as_of=as_of, limit=limit, offset=offset
                 )
         else:
             facts = await storage.get_current_facts_in_scope(
-                scope=scope, fact_type=fact_type, as_of=as_of, limit=100
+                scope=scope, fact_type=fact_type, as_of=as_of, limit=limit, offset=offset
             )
 
+        if not facts and offset > 0:
+            offset = 0
+            facts = await storage.get_current_facts_in_scope(
+                scope=scope, fact_type=fact_type, as_of=as_of, limit=limit, offset=0
+            )
+
+        scopes = await storage.get_distinct_scopes()
         conflict_ids = await storage.get_open_conflict_fact_ids()
-        return HTMLResponse(_render_facts_table(facts, conflict_ids, search_query=search_query))
+        return HTMLResponse(
+            _render_facts_table(
+                facts,
+                conflict_ids,
+                search_query=search_query,
+                offset=offset,
+                limit=limit,
+                scopes=scopes,
+            )
+        )
 
     async def conflict_queue(request: Request) -> HTMLResponse:
-        scope = request.query_params.get("scope")
+        scope = request.query_params.get("scope") or None
         status = request.query_params.get("status", "open")
-        conflicts = await storage.get_conflicts(scope=scope, status=status)
-        return HTMLResponse(_render_conflicts_page(conflicts))
+        if engine is None:
+            return HTMLResponse(_render_conflicts_page([], stats={"open": 0, "resolved": 0}))
+        conflicts = await engine.get_conflicts(scope=scope, status=status)
+        stats = {
+            "open": await storage.count_conflicts("open"),
+            "resolved": await storage.count_conflicts("resolved"),
+        }
+        return HTMLResponse(_render_conflicts_page(conflicts, stats=stats))
 
     async def approve_suggestion(request: Request) -> Response:
-        """HTMX endpoint: approve the LLM-suggested resolution for a conflict."""
+        """HTMX: approve the LLM-suggested resolution for a conflict."""
         conflict_id = request.path_params["conflict_id"]
         if engine is None:
             return HTMLResponse(
@@ -163,7 +188,7 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         return HTMLResponse(_render_conflict_card(updated or conflict))
 
     async def dismiss_conflict(request: Request) -> Response:
-        """HTMX endpoint: dismiss a conflict as a false positive."""
+        """HTMX: dismiss a conflict as a false positive."""
         conflict_id = request.path_params["conflict_id"]
         if engine is None:
             return HTMLResponse(
@@ -191,12 +216,14 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
     async def timeline(request: Request) -> HTMLResponse:
         scope = request.query_params.get("scope")
         facts = await storage.get_fact_timeline(scope=scope, limit=100)
-        return HTMLResponse(_render_timeline(facts))
+        scopes = await storage.get_distinct_scopes()
+        return HTMLResponse(_render_timeline(facts, scopes=scopes))
 
     async def agents_view(request: Request) -> HTMLResponse:
+        search_query = request.query_params.get("q", "").strip()
         agents = await storage.get_agents()
         feedback = await storage.get_detection_feedback_stats()
-        return HTMLResponse(_render_agents(agents, feedback))
+        return HTMLResponse(_render_agents(agents, feedback, search_query=search_query))
 
     async def expiring_view(request: Request) -> HTMLResponse:
         days = int(request.query_params.get("days", "7"))
@@ -238,6 +265,73 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
 
         return HTMLResponse(_render_settings(workspace_info))
 
+    async def rename_workspace(request: Request) -> HTMLResponse:
+        from engram.workspace import read_workspace, set_workspace_setting
+
+        error: str | None = None
+        ws = read_workspace()
+
+        if ws is None:
+            error = "No workspace configured."
+        elif not ws.is_creator:
+            error = "Only the workspace creator can rename the workspace."
+        else:
+            try:
+                form = await request.form()
+                new_name = str(form.get("display_name", "")).strip()
+                if not new_name:
+                    raise ValueError("Workspace name cannot be empty.")
+                set_workspace_setting("display_name", new_name)
+                # Persist to database
+                if ws.db_url:
+                    from engram.postgres_storage import PostgresStorage
+
+                    pg = PostgresStorage(
+                        db_url=ws.db_url, workspace_id=ws.engram_id, schema=ws.schema
+                    )
+                    await pg.connect()
+                    await pg.update_workspace_display_name(ws.engram_id, new_name)
+                    await pg.close()
+                else:
+                    await storage.update_workspace_display_name(ws.engram_id, new_name)
+            except Exception as exc:
+                error = str(exc)
+
+        # Re-read updated config
+        ws = read_workspace()
+        workspace_info = None
+        if ws:
+            workspace_info = {
+                "engram_id": ws.engram_id,
+                "schema": ws.schema,
+                "anonymous_mode": ws.anonymous_mode,
+                "anon_agents": ws.anon_agents,
+                "is_creator": ws.is_creator,
+                "display_name": ws.display_name,
+                "description": ws.description,
+            }
+            try:
+                if ws.db_url:
+                    from engram.postgres_storage import PostgresStorage
+
+                    pg_storage = PostgresStorage(
+                        db_url=ws.db_url, workspace_id=ws.engram_id, schema=ws.schema
+                    )
+                    await pg_storage.connect()
+                    workspace_info["invite_keys"] = await pg_storage.get_invite_keys()
+                    await pg_storage.close()
+                else:
+                    workspace_info["invite_keys"] = await storage.get_invite_keys()
+            except Exception:
+                workspace_info["invite_keys"] = []
+
+        if error and workspace_info:
+            workspace_info["rename_error"] = error
+        elif workspace_info:
+            workspace_info["rename_success"] = True
+
+        return HTMLResponse(_render_settings(workspace_info))
+
     return [
         Route("/", landing, methods=["GET"]),
         Route("/dashboard", index, methods=["GET"]),
@@ -251,6 +345,7 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         Route("/dashboard/agents", agents_view, methods=["GET"]),
         Route("/dashboard/expiring", expiring_view, methods=["GET"]),
         Route("/dashboard/settings", settings_view, methods=["GET"]),
+        Route("/dashboard/settings/rename", rename_workspace, methods=["POST"]),
     ]
 
 
@@ -521,6 +616,7 @@ def _dash_layout(
       <a href="/dashboard/agents"{_nav_cls("agents")}>Agents</a>
       <a href="/dashboard/expiring"{_nav_cls("expiring")}>Expiring</a>
       <a href="/dashboard/settings"{_nav_cls("settings")}>Settings</a>
+      <a href="#" onclick="showShortcuts();return false;" style="margin-left:auto;font-size:0.75rem;color:#9ab89a;">⌨ Shortcuts</a>
     </nav>
     {body}
   </div>
@@ -530,6 +626,14 @@ def _dash_layout(
       const isDark = html.classList.contains('dark');
       html.classList.toggle('dark');
       localStorage.setItem('engram-theme', isDark ? 'light' : 'dark');
+    }}
+    function showShortcuts() {{
+      alert('Keyboard Shortcuts:\n\n' +
+        'j/k - Navigate conflicts up/down\n' +
+        'a - Approve conflict fact A\n' +
+        'b - Approve conflict fact B\n' +
+        's - Dismiss/skip conflict\n' +
+        '? - Show this help');
     }}
     // Keyboard navigation for conflict queue
     document.addEventListener('keydown', function(e) {{
@@ -579,6 +683,7 @@ def _render_index(
     agents: list[dict],
     expiring_count: int,
     workspace_error: str | None = None,
+    recent_activity: list[dict] | None = None,
 ) -> str:
     # Show workspace error if present
     error_html = ""
@@ -651,12 +756,25 @@ def _render_index(
         <div class="stat-label">Expiring (7d)</div>
       </div>
     </div>
-    <h2>Recent Agents</h2>
-    <div class="table-wrap">
-    <table>
-      <tr><th>Agent</th><th>Engineer</th><th>Commits</th><th>Flagged</th><th>Last Seen</th></tr>
-      {"".join(_agent_row(a) for a in agents[:10])}
-    </table>
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:1.5rem;">
+      <div>
+        <h2>Recent Activity</h2>
+        <div class="table-wrap">
+        <table>
+          <tr><th>Fact</th><th>Scope</th><th>When</th></tr>
+          {"".join(f"<tr><td class='content-cell'>{_esc(f.get('content', '')[:60])}</td><td>{_esc(f.get('scope', ''))}</td><td>{_esc(f.get('committed_at', '')[:16])}</td></tr>" for f in (recent_activity or [])[:10])}
+        </table>
+        </div>
+      </div>
+      <div>
+        <h2>Recent Agents</h2>
+        <div class="table-wrap">
+        <table>
+          <tr><th>Agent</th><th>Commits</th></tr>
+          {"".join(f"<tr><td>{_esc(a.get('agent_id', ''))}</td><td>{a.get('total_commits', 0)}</td></tr>" for a in agents[:5])}
+        </table>
+        </div>
+      </div>
     </div>"""
     return _dash_layout("Overview", body, active="overview", workspace_name=_get_workspace_name())
 
@@ -672,7 +790,14 @@ def _agent_row(a: dict) -> str:
     )
 
 
-def _render_facts_table(facts: list[dict], conflict_ids: set[str], search_query: str = "") -> str:
+def _render_facts_table(
+    facts: list[dict],
+    conflict_ids: set[str],
+    search_query: str = "",
+    offset: int = 0,
+    limit: int = 100,
+    scopes: list[str] | None = None,
+) -> str:
     rows = []
     for f in facts:
         has_conflict = f["id"] in conflict_ids
@@ -700,12 +825,28 @@ def _render_facts_table(facts: list[dict], conflict_ids: set[str], search_query:
             f"<td>{conflict_badge} {ver_badge}</td>"
             f"<td>{_esc(f.get('committed_at', '')[:19])}</td></tr>"
         )
+
+    prev_offset = max(0, offset - limit)
+    next_offset = offset + limit if len(facts) == limit else offset
+    pagination = ""
+    if offset > 0 or len(facts) == limit:
+        pagination = f"""
+        <div class="pagination" style="display:flex;gap:0.5rem;margin-top:1rem;">
+          <a href="?q={_esc(search_query)}&offset={prev_offset}&limit={limit}" class="btn-dismiss" {"style:pointer-events:none;opacity:0.5;" if offset == 0 else ""}>&larr; Previous</a>
+          <span style="padding:0.4rem 0.8rem;color:#5a8a5a;">Page {offset // limit + 1}</span>
+          <a href="?q={_esc(search_query)}&offset={next_offset}&limit={limit}" class="btn-dismiss" {"style:pointer-events:none;opacity:0.5;" if len(facts) < limit else ""}>Next &rarr;</a>
+        </div>"""
+
+    scope_options = ""
+    if scopes:
+        scope_options = "".join(f'<option value="{_esc(s)}">{_esc(s)}</option>' for s in scopes)
     body = f"""
     <h2>Knowledge Base</h2>
     <div class="filter-bar">
       <form method="get" action="/dashboard/facts" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
         <input type="text" name="q" placeholder="Search facts..." value="{_esc(search_query)}" style="min-width:200px;">
-        <input name="scope" placeholder="Scope filter" value="">
+        <input name="scope" placeholder="Scope filter" value="" list="scopes-list">
+        <datalist id="scopes-list">{scope_options}</datalist>
         <select name="fact_type">
           <option value="">All types</option>
           <option value="observation">observation</option>
@@ -713,7 +854,12 @@ def _render_facts_table(facts: list[dict], conflict_ids: set[str], search_query:
           <option value="decision">decision</option>
         </select>
         <input name="as_of" placeholder="as_of (ISO 8601)" value="">
+        <input type="hidden" name="offset" value="{offset}">
+        <input type="hidden" name="limit" value="{limit}">
         <button type="submit">Search</button>
+        <a href="?fact_type=observation" class="btn-dismiss">Observations</a>
+        <a href="?fact_type=inference" class="btn-dismiss">Inferences</a>
+        <a href="?fact_type=decision" class="btn-dismiss">Decisions</a>
       </form>
     </div>
     <div class="table-wrap">
@@ -723,225 +869,203 @@ def _render_facts_table(facts: list[dict], conflict_ids: set[str], search_query:
       {"".join(rows)}
     </table>
     </div>
-    <p class="count-note">{len(facts)} fact(s)</p>"""
+    <p class="count-note">{len(facts)} fact(s)</p>
+    {pagination}"""
     return _dash_layout(
         "Knowledge Base", body, active="facts", workspace_name=_get_workspace_name()
     )
 
 
-def _render_conflicts_page(conflicts: list[dict]) -> str:
-    cards = "".join(_render_conflict_card(c) for c in conflicts)
-    if not cards:
-        cards = '<p style="color:#9ab89a;font-size:0.85rem;padding:1rem 0;">No conflicts found.</p>'
+def _render_conflicts_page(conflicts: list[dict], stats: dict | None = None) -> str:
+    """Render the Conflicts tab."""
+    open_count = (
+        stats.get("open", 0) if stats else sum(1 for c in conflicts if c.get("status") == "open")
+    )
+    resolved_count = (
+        stats.get("resolved", 0)
+        if stats
+        else sum(1 for c in conflicts if c.get("status") == "resolved")
+    )
+
+    if not conflicts:
+        empty_html = (
+            '<div style="text-align:center;padding:4rem 1rem;color:#5a8a5a;">'
+            '<div style="font-size:2.5rem;margin-bottom:0.75rem;">✓</div>'
+            '<div style="font-size:1rem;font-weight:600;color:#1a3a1a;">No conflicts detected</div>'
+            '<div style="font-size:0.85rem;margin-top:0.4rem;">Your agents are aligned.</div>'
+            "</div>"
+        )
+        cards_html = empty_html
+    else:
+        cards_html = (
+            '<div class="conflict-cards">'
+            + "".join(_render_conflict_card(c) for c in conflicts)
+            + "</div>"
+        )
+
+    filter_form = """
+    <form method="get" action="/dashboard/conflicts" class="filter-bar">
+      <input name="scope" placeholder="Filter by scope…" value="">
+      <select name="status">
+        <option value="open">Open</option>
+        <option value="resolved">Resolved</option>
+        <option value="dismissed">Dismissed</option>
+        <option value="all">All</option>
+      </select>
+      <button type="submit">Filter</button>
+    </form>"""
+
     body = f"""
-    <h2>Conflict Queue</h2>
-    <div class="filter-bar">
-      <form method="get" action="/dashboard/conflicts" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-        <input name="scope" placeholder="Scope filter" value="">
-        <select name="status">
-          <option value="open">Open</option>
-          <option value="resolved">Resolved</option>
-          <option value="dismissed">Dismissed</option>
-          <option value="all">All</option>
-        </select>
-        <button type="submit">Filter</button>
-      </form>
+    <div class="dash-header">
+      <div class="dash-title"><h2 style="margin:0;">Conflicts</h2></div>
+      <div style="display:flex;gap:0.5rem;">
+        <span class="badge badge-open">{open_count} open</span>
+        <span class="badge badge-resolved">{resolved_count} resolved</span>
+      </div>
     </div>
-    <div class="conflict-cards">{cards}</div>
-    <p class="count-note">{len(conflicts)} conflict(s)</p>
-    <div class="keyboard-hints">
-      <span><kbd>j</kbd> <kbd>k</kbd> navigate</span>
-      <span><kbd>a</kbd> accept fact A</span>
-      <span><kbd>b</kbd> accept fact B</span>
-      <span><kbd>s</kbd> skip</span>
-    </div>"""
+    {filter_form}
+    {cards_html}"""
+
     return _dash_layout("Conflicts", body, active="conflicts", workspace_name=_get_workspace_name())
 
 
 def _render_conflict_card(c: dict) -> str:
-    """Render one conflict as a self-contained card (also used for HTMX swap targets)."""
-    cid = c.get("id", "")
-    sev = c.get("severity", "low")
-    status = c.get("status", "open")
-    auto = c.get("auto_resolved", 0)
-    detected = c.get("detected_at", "")[:19]
-
-    # Header badges
-    sev_badge = f'<span class="badge badge-{sev}">{sev}</span>'
-    if auto:
-        status_badge = '<span class="badge badge-auto">auto-resolved</span>'
+    """Render one conflict card. Handles both engine dicts and flat storage rows."""
+    # Normalise nested vs flat shapes
+    if "fact_a" in c:
+        fact_a = c["fact_a"]
+        fact_b = c["fact_b"]
+        cid = c.get("conflict_id", "")
+        explanation = c.get("explanation", "")
+        status = c.get("status", "open")
+        severity = c.get("severity", "high")
+        detected = (c.get("detected_at") or "")[:16]
+        resolution = c.get("resolution") or ""
+        resolution_type = c.get("resolution_type") or ""
+        suggested_text = c.get("suggested_resolution") or ""
+        suggested_type = c.get("suggested_resolution_type") or ""
+        winning_id = c.get("suggested_winning_fact_id") or ""
+        reasoning = c.get("suggestion_reasoning") or ""
+        fact_a_id = fact_a.get("fact_id", "")
+        fact_b_id = fact_b.get("fact_id", "")
     else:
-        status_badge = f'<span class="badge badge-{status}">{status}</span>'
-    tier_tag = f'<span class="tier-tag">{_esc(c.get("detection_tier", ""))}</span>'
+        fact_a = {
+            "content": c.get("fact_a_content", ""),
+            "scope": c.get("fact_a_scope", ""),
+            "agent_id": c.get("fact_a_agent", ""),
+            "confidence": c.get("fact_a_confidence", 0),
+        }
+        fact_b = {
+            "content": c.get("fact_b_content", ""),
+            "scope": c.get("fact_b_scope", ""),
+            "agent_id": c.get("fact_b_agent", ""),
+            "confidence": c.get("fact_b_confidence", 0),
+        }
+        cid = c.get("id", "")
+        explanation = c.get("explanation", "")
+        status = c.get("status", "open")
+        severity = c.get("severity", "high")
+        detected = (c.get("detected_at") or "")[:16]
+        resolution = c.get("resolution") or ""
+        resolution_type = c.get("resolution_type") or ""
+        suggested_text = c.get("suggested_resolution") or ""
+        suggested_type = c.get("suggested_resolution_type") or ""
+        winning_id = c.get("suggested_winning_fact_id") or ""
+        reasoning = c.get("suggestion_reasoning") or ""
+        fact_a_id = c.get("fact_a_id", "")
+        fact_b_id = c.get("fact_b_id", "")
 
-    # Escalation countdown (only for open conflicts)
-    escalation_html = ""
-    if status == "open":
-        try:
-            detected_dt = datetime.fromisoformat(c["detected_at"])
-            now_dt = datetime.now(timezone.utc)
-            hours_elapsed = (now_dt - detected_dt).total_seconds() / 3600
-            hours_remaining = 72 - hours_elapsed
-            if hours_remaining > 0:
-                escalation_html = (
-                    f'<span class="escalation-note">auto-escalates in {hours_remaining:.0f}h</span>'
-                )
-            else:
-                escalation_html = (
-                    '<span class="escalation-note" style="color:#dc2626;">escalation overdue</span>'
-                )
-        except Exception:
-            pass
+    sev_badge_cls = {"high": "badge-high", "medium": "badge-medium", "low": "badge-low"}.get(
+        severity, "badge-low"
+    )
+    status_badge_cls = {
+        "open": "badge-open",
+        "resolved": "badge-resolved",
+        "dismissed": "badge-dismissed",
+    }.get(status, "badge-dismissed")
 
-    # Fact boxes
-    def _fact_box(content: str, scope: str, agent: str, confidence: float) -> str:
+    def _fact_box(f: dict, label: str) -> str:
+        content = _esc(str(f.get("content") or ""))
+        scope = _esc(str(f.get("scope") or ""))
+        agent = _esc(str(f.get("agent_id") or ""))
         return (
             f'<div class="fact-box">'
-            f'<div class="fact-content">{_esc(content)}</div>'
-            f'<div class="fact-meta">'
-            f"scope: {_esc(scope)} &middot; "
-            f"conf: {confidence:.2f} &middot; "
-            f"agent: {_esc(agent)}"
-            f"</div></div>"
+            f'<div class="fact-meta" style="font-weight:600;margin-bottom:0.35rem;text-transform:uppercase;font-size:0.68rem;">{label}</div>'
+            f'<div class="fact-content">{content}</div>'
+            f'<div class="fact-meta">scope: {scope} · agent: {agent}</div>'
+            f"</div>"
         )
 
-    fact_a_box = _fact_box(
-        c.get("fact_a_content", ""),
-        c.get("fact_a_scope", ""),
-        c.get("fact_a_agent", ""),
-        float(c.get("fact_a_confidence") or 0),
-    )
-    fact_b_box = _fact_box(
-        c.get("fact_b_content", ""),
-        c.get("fact_b_scope", ""),
-        c.get("fact_b_agent", ""),
-        float(c.get("fact_b_confidence") or 0),
-    )
-
-    explanation = c.get("explanation", "")
-
-    # Create a human-readable conflict summary
-    tier = c.get("detection_tier", "")
-    summary_html = ""
-    if tier == "tier0_entity" and explanation:
-        # Extract entity name and values for cleaner display
-        import re
-
-        match = re.search(
-            r"Entity '([^']+)' has conflicting values: '([^']+)' vs '([^']+)'", explanation
-        )
-        if match:
-            entity, val_a, val_b = match.groups()
-            summary_html = (
-                f'<div class="conflict-summary"><strong>{entity}</strong>: {val_a} ⟷ {val_b}</div>'
-            )
-    elif tier == "tier1_nli" and explanation:
-        # Clean up NLI explanation
-        match = re.search(
-            r'Semantic contradiction.*?:\s*"?([^"]+)"?\s*vs\s*"?([^"]+)"?', explanation
-        )
-        if match:
-            content_a, content_b = match.groups()
-            summary_html = f'<div class="conflict-summary">Conflicting claims: <em>{content_a[:50]}...</em> vs <em>{content_b[:50]}...</em></div>'
-
-    expl_html = (
-        f'<div class="conflict-explanation">{_esc(explanation)}</div>' if explanation else ""
-    )
-
-    # Suggestion section
-    suggestion_html = ""
-    suggested_type = c.get("suggested_resolution_type", "")
-    suggested_text = c.get("suggested_resolution", "")
-    reasoning = c.get("suggestion_reasoning", "")
-
-    if suggested_text and status == "open":
-        type_badge = f'<span class="badge badge-low">{_esc(suggested_type)}</span>'
-        winning_id = c.get("suggested_winning_fact_id") or ""
-        winning_label = ""
-        if suggested_type == "winner" and winning_id:
-            if winning_id == c.get("fact_a_id"):
-                winning_label = " · keep Fact A"
-            elif winning_id == c.get("fact_b_id"):
-                winning_label = " · keep Fact B"
-
-        approve_btn = (
+    # Build action buttons for open conflicts
+    actions_html = ""
+    if status == "open":
+        keep_a = (
             f'<button class="btn-approve" '
             f'hx-post="/dashboard/conflicts/{_esc(cid)}/approve" '
-            f'hx-target="#conflict-{_esc(cid)}" '
-            f'hx-swap="outerHTML" '
-            f'hx-indicator="#conflict-{_esc(cid)}">'
-            f"Approve{_esc(winning_label)}</button>"
+            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Keep Fact A</button>'
+        )
+        keep_b = (
+            f'<button class="btn-approve" '
+            f'hx-post="/dashboard/conflicts/{_esc(cid)}/approve" '
+            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Keep Fact B</button>'
         )
         dismiss_btn = (
             f'<button class="btn-dismiss" '
             f'hx-post="/dashboard/conflicts/{_esc(cid)}/dismiss" '
-            f'hx-target="#conflict-{_esc(cid)}" '
-            f'hx-swap="outerHTML">'
-            f"Dismiss</button>"
-        )
-        suggestion_html = (
-            f'<div class="suggestion-box">'
-            f'<div class="suggestion-header">'
-            f"Suggested Resolution {type_badge}</div>"
-            f'<div class="suggestion-text">{_esc(suggested_text)}</div>'
-            f'<div class="suggestion-reasoning">Reasoning: {_esc(reasoning)}</div>'
-            f'<div class="suggestion-actions">{approve_btn}{dismiss_btn}</div>'
-            f"</div>"
-        )
-    elif status == "open" and not suggested_text:
-        # No suggestion yet — show a dismiss-only button
-        dismiss_btn = (
-            f'<button class="btn-dismiss" '
-            f'hx-post="/dashboard/conflicts/{_esc(cid)}/dismiss" '
-            f'hx-target="#conflict-{_esc(cid)}" '
-            f'hx-swap="outerHTML">'
-            f"Dismiss</button>"
-        )
-        suggestion_html = (
-            f'<div class="suggestion-box" style="background:#f7fdf7;">'
-            f'<div class="suggestion-header" style="color:#9ab89a;">'
-            f"Suggestion pending...</div>"
-            f'<div class="suggestion-actions" style="margin-top:0.5rem;">{dismiss_btn}</div>'
-            f"</div>"
+            f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Dismiss</button>'
         )
 
-    # Resolution note (for resolved/dismissed/auto-resolved)
-    resolution_html = ""
-    if status != "open" or auto:
-        res_text = c.get("resolution", "")
-        res_type = c.get("resolution_type", "")
-        res_by = c.get("resolved_by", "")
-        res_at = (c.get("resolved_at") or "")[:19]
-        if res_text:
-            auto_note = " (auto)" if auto else ""
-            resolution_html = (
-                f'<div class="resolution-note">'
-                f"Resolved{auto_note} as <strong>{_esc(res_type)}</strong>"
-                f" by {_esc(res_by)} at {_esc(res_at)}: {_esc(res_text)}"
-                f"</div>"
+        suggestion_html = ""
+        if suggested_text:
+            winning_label = ""
+            if winning_id == fact_a_id:
+                winning_label = " · keep Fact A"
+            elif winning_id == fact_b_id:
+                winning_label = " · keep Fact B"
+            suggestion_html = (
+                f'<div class="suggestion-box">'
+                f'<div class="suggestion-header">🤖 Suggested: {_esc(suggested_type)}{_esc(winning_label)}</div>'
+                f'<div class="suggestion-text">{_esc(suggested_text)}</div>'
+                f'<div class="suggestion-reasoning">{_esc(reasoning)}</div>'
+                f'<div class="suggestion-actions">'
+                f'<button class="btn-approve" '
+                f'hx-post="/dashboard/conflicts/{_esc(cid)}/approve" '
+                f'hx-target="#conflict-{_esc(cid)}" hx-swap="outerHTML">Approve suggestion</button>'
+                f"{dismiss_btn}</div></div>"
             )
 
-    card_cls = "conflict-card auto-resolved" if auto else "conflict-card"
+        actions_html = (
+            f'<div class="suggestion-actions" style="margin-top:0.75rem;">'
+            f"{keep_a}{keep_b}{dismiss_btn}</div>"
+            f"{suggestion_html}"
+        )
+    elif resolution:
+        actions_html = (
+            f'<div class="resolution-note">'
+            f"Resolved as <strong>{_esc(resolution_type)}</strong>: {_esc(resolution)}"
+            f"</div>"
+        )
+
     return (
-        f'<div class="{card_cls}" id="conflict-{_esc(cid)}">'
+        f'<div id="conflict-{_esc(cid)}" class="conflict-card">'
         f'<div class="conflict-header">'
-        f"{sev_badge}{status_badge}{tier_tag}"
-        f'<span class="conflict-id">{_esc(cid[:12])}...</span>'
-        f'<span style="font-size:0.7rem;color:#9ab89a;">{_esc(detected)}</span>'
-        f"{escalation_html}"
+        f'<span class="badge {sev_badge_cls}">{_esc(severity)}</span>'
+        f'<span class="conflict-id">{_esc(cid[:12])}</span>'
+        f'<span style="color:#9ab89a;font-size:0.72rem;">{_esc(detected)}</span>'
+        f'<span class="badge {status_badge_cls}" style="margin-left:auto;">{_esc(status)}</span>'
         f"</div>"
-        f'<div class="conflict-facts">{fact_a_box}'
+        f'<div class="conflict-facts">'
+        f"{_fact_box(fact_a, 'Fact A')}"
         f'<div class="vs-divider">vs</div>'
-        f"{fact_b_box}</div>"
-        f"{summary_html}"
-        f"{expl_html}"
-        f"{suggestion_html}"
-        f"{resolution_html}"
+        f"{_fact_box(fact_b, 'Fact B')}"
+        f"</div>"
+        f'<div class="conflict-explanation">{_esc(explanation)}</div>'
+        f"{actions_html}"
         f"</div>"
     )
 
 
-def _render_timeline(facts: list[dict]) -> str:
+def _render_timeline(facts: list[dict], scopes: list[str] | None = None) -> str:
     rows = []
     for f in facts:
         is_superseded = f.get("valid_until") is not None
@@ -957,11 +1081,15 @@ def _render_timeline(facts: list[dict]) -> str:
             f"<td>{valid_range}</td>"
             f"<td><div class='{bar_class}' style='width:60px;'></div></td></tr>"
         )
+    scope_options = ""
+    if scopes:
+        scope_options = "".join(f'<option value="{_esc(s)}">{_esc(s)}</option>' for s in scopes)
     body = f"""
     <h2>Timeline</h2>
     <div class="filter-bar">
       <form method="get" action="/dashboard/timeline" style="display:flex;gap:0.5rem;">
-        <input name="scope" placeholder="Scope filter" value="">
+        <input name="scope" placeholder="Scope filter" value="" list="scopes-list">
+        <datalist id="scopes-list">{scope_options}</datalist>
         <button type="submit">Filter</button>
       </form>
     </div>
@@ -974,16 +1102,29 @@ def _render_timeline(facts: list[dict]) -> str:
     return _dash_layout("Timeline", body, active="timeline", workspace_name=_get_workspace_name())
 
 
-def _render_agents(agents: list[dict], feedback: dict[str, int]) -> str:
+def _render_agents(agents: list[dict], feedback: dict[str, int], search_query: str = "") -> str:
     rows = []
-    for a in agents:
+    filtered_agents = agents
+    if search_query:
+        filtered_agents = [
+            a
+            for a in agents
+            if search_query.lower() in a.get("agent_id", "").lower()
+            or search_query.lower() in a.get("engineer", "").lower()
+        ]
+    for a in filtered_agents:
         total = a.get("total_commits", 0)
         flagged = a.get("flagged_commits", 0)
         reliability = f"{(1 - flagged / total) * 100:.0f}%" if total > 0 else "N/A"
+        rel_score = (1 - flagged / total) * 100 if total > 0 else 0
+        rel_badge = (
+            '<span class="badge badge-high">🔥 Top</span>' if rel_score >= 90 and total >= 5 else ""
+        )
         rows.append(
             f"<tr><td>{_esc(a['agent_id'])}</td>"
             f"<td>{_esc(a.get('engineer', ''))}</td>"
-            f"<td>{total}</td><td>{flagged}</td><td>{reliability}</td>"
+            f"<td>{total}</td><td>{flagged}</td>"
+            f"<td>{reliability} {rel_badge}</td>"
             f"<td>{_esc(a.get('registered_at', '')[:19])}</td>"
             f"<td>{_esc(a.get('last_seen', '') or '')[:19]}</td></tr>"
         )
@@ -991,6 +1132,12 @@ def _render_agents(agents: list[dict], feedback: dict[str, int]) -> str:
     fp = feedback.get("false_positive", 0)
     body = f"""
     <h2>Agent Activity</h2>
+    <div class="filter-bar">
+      <form method="get" action="/dashboard/agents" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <input type="text" name="q" placeholder="Search agents..." value="{_esc(search_query)}" style="min-width:180px;">
+        <button type="submit">Search</button>
+      </form>
+    </div>
     <div class="stats">
       <div class="stat">
         <div class="stat-value">{len(agents)}</div>
@@ -1011,7 +1158,8 @@ def _render_agents(agents: list[dict], feedback: dict[str, int]) -> str:
           <th>Reliability</th><th>Registered</th><th>Last Seen</th></tr>
       {"".join(rows)}
     </table>
-    </div>"""
+    </div>
+    <p class="count-note">{len(filtered_agents)} agent(s)</p>"""
     return _dash_layout("Agents", body, active="agents", workspace_name=_get_workspace_name())
 
 
@@ -1090,9 +1238,36 @@ def _render_settings(workspace_info: dict | None) -> str:
 
     display_name = workspace_info.get("display_name", "")
     description = workspace_info.get("description", "")
+    rename_error = workspace_info.get("rename_error", "")
+    rename_success = workspace_info.get("rename_success", False)
+
+    rename_feedback = ""
+    if rename_error:
+        rename_feedback = (
+            f'<p style="color:#dc2626;font-size:0.8rem;margin-top:0.5rem;">{_esc(rename_error)}</p>'
+        )
+    elif rename_success:
+        rename_feedback = '<p style="color:#16a34a;font-size:0.8rem;margin-top:0.5rem;">Workspace name updated.</p>'
+
+    name_section = f"""
+    <div style="margin-bottom:2rem;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Display Name</h3>
+        <form method="post" action="/dashboard/settings/rename" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+            <input type="text" name="display_name" value="{_esc(display_name)}" placeholder="e.g. Engineering Team" style="min-width:220px;">
+            <button type="submit">Save</button>
+        </form>
+        {rename_feedback}
+    </div>"""
 
     body = f"""
     <h2>Workspace Settings</h2>
+
+    {name_section}
+
+    <div style="margin-bottom:2rem;">
+        <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Description</h3>
+        <code style="background:#f3f4f6;padding:0.5rem;border-radius:4px;">{_esc(description) or "(not set)"}</code>
+    </div>
     
     <div style="margin-bottom:2rem;">
         <h3 style="font-size:1rem;color:#374151;margin-bottom:0.5rem;">Display Name</h3>
@@ -1171,7 +1346,7 @@ def _esc(s: Any) -> str:
 
 
 def _render_fact_detail(fact: dict, lineage: list[dict]) -> str:
-    """Render detailed view of a single fact with lineage."""
+    """Render detailed view of a single fact with lineage and query log."""
     fact_id = fact.get("id", "")
     content = _esc(fact.get("content", ""))
     scope = _esc(fact.get("scope", ""))
@@ -1181,11 +1356,16 @@ def _render_fact_detail(fact: dict, lineage: list[dict]) -> str:
     committed_at = fact.get("committed_at", "")[:19]
     provenance = fact.get("provenance")
     lineage_id = fact.get("lineage_id", "")
+    query_hits = fact.get("query_hits", 0)
+    durability = fact.get("durability", "durable")
 
     verified = (
         '<span class="badge badge-verified">verified</span>'
         if provenance
         else '<span class="badge badge-unverified">unverified</span>'
+    )
+    durability_badge = (
+        f'<span class="badge badge-low">{durability}</span>' if durability == "ephemeral" else ""
     )
 
     lineage_html = ""
@@ -1212,7 +1392,21 @@ def _render_fact_detail(fact: dict, lineage: list[dict]) -> str:
                 <div><span style="color:#6b7280;font-size:0.85rem;">Confidence</span><div>{confidence:.2f}</div></div>
                 <div><span style="color:#6b7280;font-size:0.85rem;">Agent</span><div>{agent_id}</div></div>
                 <div><span style="color:#6b7280;font-size:0.85rem;">Committed</span><div>{committed_at}</div></div>
-                <div><span style="color:#6b7280;font-size:0.85rem;">Status</span><div>{verified}</div></div>
+                <div><span style="color:#6b7280;font-size:0.85rem;">Status</span><div>{verified} {durability_badge}</div></div>
+            </div>
+
+            <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #e5e7eb;">
+                <h4 style="font-size:0.9rem;color:#6b7280;margin-bottom:0.5rem;">Query Log</h4>
+                <div style="display:flex;gap:1rem;">
+                    <div style="background:#fff;padding:0.5rem 1rem;border-radius:6px;border:1px solid #e5e7eb;">
+                        <span style="color:#6b7280;font-size:0.8rem;">Times Queried</span>
+                        <div style="font-size:1.5rem;font-weight:600;color:#111827;">{query_hits}</div>
+                    </div>
+                    <div style="background:#fff;padding:0.5rem 1rem;border-radius:6px;border:1px solid #e5e7eb;">
+                        <span style="color:#6b7280;font-size:0.8rem;">Corroborating Agents</span>
+                        <div style="font-size:1.5rem;font-weight:600;color:#111827;">{fact.get("corroborating_agents", 0)}</div>
+                    </div>
+                </div>
             </div>
             
             {lineage_html}
