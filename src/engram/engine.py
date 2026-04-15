@@ -1094,16 +1094,18 @@ class EngramEngine:
                     if e["type"] == "numeric" and e.get("value") is not None
                 }
 
+                conflicts_on = []
                 for name in set(new_nums) & set(other_nums):
                     val_new = new_nums[name]
                     val_other = other_nums[name]
                     if str(val_new) == str(val_other):
                         continue
-
                     label_new = "unlimited" if val_new == -1 else str(val_new)
                     label_other = "unlimited" if val_other == -1 else str(val_other)
-                    severity = "high" if fact.get("agent_id") != other.get("agent_id") else "medium"
+                    conflicts_on.append(f"'{name}': {label_new} vs {label_other}")
 
+                if conflicts_on:
+                    severity = "high" if fact.get("agent_id") != other.get("agent_id") else "medium"
                     cid = uuid.uuid4().hex
                     await self.storage.insert_conflict(
                         {
@@ -1114,9 +1116,8 @@ class EngramEngine:
                             "detection_tier": "tier2_numeric",
                             "nli_score": None,
                             "explanation": (
-                                f"Conflict on '{name}': "
-                                f'"{fact["content"][:60]}…" says {label_new}, '
-                                f'"{other["content"][:60]}…" says {label_other}'
+                                f"Numeric conflict(s) on {', '.join(conflicts_on)}: "
+                                f'"{fact["content"][:60]}…" vs "{other["content"][:60]}…"'
                             ),
                             "severity": severity,
                             "status": "open",
@@ -1127,10 +1128,8 @@ class EngramEngine:
                     except asyncio.QueueFull:
                         pass
                     logger.info(
-                        "Conflict detected (same-scope): %s=%s vs %s (facts %s, %s)",
-                        name,
-                        label_new,
-                        label_other,
+                        "Conflict detected (same-scope numeric): %s (facts %s, %s)",
+                        ", ".join(conflicts_on),
                         fact_id[:8],
                         other["id"][:8],
                     )
@@ -1231,18 +1230,20 @@ class EngramEngine:
                         if e["type"] == "numeric" and e.get("value") is not None
                     }
 
+                    conflicts_on = []
                     for name in set(new_nums) & set(other_nums):
                         val_new = new_nums[name]
                         val_other = other_nums[name]
                         if str(val_new) == str(val_other):
                             continue
-
                         label_new = "unlimited" if val_new == -1 else str(val_new)
                         label_other = "unlimited" if val_other == -1 else str(val_other)
+                        conflicts_on.append(f"'{name}': {label_new} vs {label_other}")
+
+                    if conflicts_on:
                         severity = (
                             "high" if fact.get("agent_id") != other.get("agent_id") else "medium"
                         )
-
                         cid = uuid.uuid4().hex
                         await self.storage.insert_conflict(
                             {
@@ -1253,9 +1254,8 @@ class EngramEngine:
                                 "detection_tier": "tier2b_cross_scope",
                                 "nli_score": None,
                                 "explanation": (
-                                    f"Cross-scope conflict on '{name}': "
-                                    f'scope "{scope}" says {label_new}, '
-                                    f'scope "{other_scope}" says {label_other}'
+                                    f"Cross-scope numeric conflict(s) on {', '.join(conflicts_on)}: "
+                                    f'scope "{scope}" vs scope "{other_scope}"'
                                 ),
                                 "severity": severity,
                                 "status": "open",
@@ -1266,10 +1266,8 @@ class EngramEngine:
                         except asyncio.QueueFull:
                             pass
                         logger.info(
-                            "Conflict detected (cross-scope): %s=%s vs %s (facts %s, %s)",
-                            name,
-                            label_new,
-                            label_other,
+                            "Conflict detected (cross-scope numeric): %s (facts %s, %s)",
+                            ", ".join(conflicts_on),
                             fact_id[:8],
                             other["id"][:8],
                         )
@@ -1358,14 +1356,17 @@ class EngramEngine:
                     if e["type"] == "numeric" and e.get("value") is not None
                 }
 
+                conflicts_on = []
                 for name in set(a_nums) & set(b_nums):
                     val_a = a_nums[name]
                     val_b = b_nums[name]
                     if str(val_a) == str(val_b):
                         continue
-
                     label_a = "unlimited" if val_a == -1 else str(val_a)
                     label_b = "unlimited" if val_b == -1 else str(val_b)
+                    conflicts_on.append(f"'{name}': {label_a} vs {label_b}")
+
+                if conflicts_on:
                     severity = "high" if a.get("agent_id") != b.get("agent_id") else "medium"
                     cid = uuid.uuid4().hex
                     await self.storage.insert_conflict(
@@ -1377,9 +1378,8 @@ class EngramEngine:
                             "detection_tier": "tier2_numeric",
                             "nli_score": None,
                             "explanation": (
-                                f"Conflict on '{name}': "
-                                f'"{a["content"][:60]}…" says {label_a}, '
-                                f'"{b["content"][:60]}…" says {label_b}'
+                                f"Numeric conflict(s) on {', '.join(conflicts_on)}: "
+                                f'"{a["content"][:60]}…" vs "{b["content"][:60]}…"'
                             ),
                             "severity": severity,
                             "status": "open",
