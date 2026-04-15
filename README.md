@@ -2,9 +2,9 @@
 
 # Engram
 
-**Shared memory for your team's agents**
+**Shared memory for AI agent teams**
 
-Persistent memory that survives across sessions and detects when agents contradict each other.
+Persistent memory that survives across sessions, keeps agents aligned on verified facts, and catches contradictions early.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](./LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8b5cf6?style=flat-square)](https://modelcontextprotocol.io)
@@ -14,13 +14,26 @@ Persistent memory that survives across sessions and detects when agents contradi
 
 ---
 
+## Best Fit For
+
+Engram is purpose-built for teams that run multiple AI agents in the same codebase:
+
+- **Multiple agents in parallel** — Keep Claude Code, Copilot, Windsurf, and custom agents aligned
+- **Long-lived context** — Stop context from fragmenting across sessions and agents
+- **Consistency requirements** — Catch contradictions before they become production bugs
+- **Auditability needs** — Track how knowledge evolved, who verified what, and why decisions changed
+
+**Not the right fit for:** Single-agent workflows, one-off scripts, or teams that don't need shared memory.
+
+---
+
 ## What It Does
 
 When one agent discovers something important — a hidden side effect, a failed approach, an undocumented constraint — it commits that fact. Every other agent on your team can query it instantly.
 
 When two agents develop incompatible beliefs, Engram detects the contradiction and surfaces it for review.
 
-**Your data is private.** All data is encrypted, isolated by workspace, and never read, analyzed, or redistributed. We have a deep commitment to privacy.
+**Your data is private.** All data is encrypted, isolated by workspace, and never read, analyzed, or redistributed.
 
 ---
 
@@ -136,7 +149,7 @@ Watch this quick demo to get started with Engram:
 
 ---
 
-## How It Works
+## Why Teams Use Engram
 
 ```
 ┌──────────────────────────────────────────┐
