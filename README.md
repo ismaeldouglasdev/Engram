@@ -20,6 +20,14 @@ When your team works in the same codebase, your AI agents work in parallel — a
 
 Every agent's messages are automatically committed to shared memory as facts. No manual step. No copy-pasting context between sessions. The team's collective knowledge accumulates and every agent benefits from it instantly.
 
+## Why It Matters
+
+Conflict detection for AI agents is as foundational as accounting was for finance. Accounting didn't just track money — it created the liability infrastructure that made safe, auditable scaling of the entire financial economy possible. Engram does the same for AI agents.
+
+Everyone is racing to build the engine — faster models, smarter agents, more automation. But engines without brakes aren't progress, they're liability. Engram is the brakes: the layer that lets teams move fast without losing control of where they're headed.
+
+When agents make consequential decisions, someone has to be accountable. Engram creates a verifiable audit trail — every instruction, every committed fact, every contradiction surfaced — so liability lands on the organizations deploying agents, not the tools themselves.
+
 ### Demo Video
 
 [![Watch the demo](https://img.youtube.com/vi/KFIjxyTO2q4/maxresdefault.jpg)](https://youtu.be/KFIjxyTO2q4)
