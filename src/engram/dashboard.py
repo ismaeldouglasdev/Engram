@@ -120,17 +120,29 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
             except Exception:
                 # FTS fallback - use regular query
                 facts = await storage.get_current_facts_in_scope(
-                    scope=scope_filter, fact_type=fact_type_filter, as_of=as_of_filter, limit=limit, offset=offset
+                    scope=scope_filter,
+                    fact_type=fact_type_filter,
+                    as_of=as_of_filter,
+                    limit=limit,
+                    offset=offset,
                 )
         else:
             facts = await storage.get_current_facts_in_scope(
-                scope=scope_filter, fact_type=fact_type_filter, as_of=as_of_filter, limit=limit, offset=offset
+                scope=scope_filter,
+                fact_type=fact_type_filter,
+                as_of=as_of_filter,
+                limit=limit,
+                offset=offset,
             )
 
         if not facts and offset > 0:
             offset = 0
             facts = await storage.get_current_facts_in_scope(
-                scope=scope_filter, fact_type=fact_type_filter, as_of=as_of_filter, limit=limit, offset=0
+                scope=scope_filter,
+                fact_type=fact_type_filter,
+                as_of=as_of_filter,
+                limit=limit,
+                offset=0,
             )
 
         scopes = await storage.get_distinct_scopes()
@@ -154,14 +166,18 @@ def build_dashboard_routes(storage: Storage, engine: Any = None) -> list[Route]:
         status = request.query_params.get("status", "open")
         if engine is None:
             return HTMLResponse(
-                _render_conflicts_page([], stats={"open": 0, "resolved": 0}, scope=scope, status=status)
+                _render_conflicts_page(
+                    [], stats={"open": 0, "resolved": 0}, scope=scope, status=status
+                )
             )
         conflicts = await engine.get_conflicts(scope=scope, status=status)
         stats = {
             "open": await storage.count_conflicts("open"),
             "resolved": await storage.count_conflicts("resolved"),
         }
-        return HTMLResponse(_render_conflicts_page(conflicts, stats=stats, scope=scope, status=status))
+        return HTMLResponse(
+            _render_conflicts_page(conflicts, stats=stats, scope=scope, status=status)
+        )
 
     async def approve_suggestion(request: Request) -> Response:
         """HTMX: approve the LLM-suggested resolution for a conflict."""
@@ -861,9 +877,7 @@ def _render_facts_table(
         content_escaped = _esc(f["content"])
         if search_query:
             pattern = re.compile(re.escape(_esc(search_query)), re.IGNORECASE)
-            content_escaped = pattern.sub(
-                lambda m: f"<mark>{m.group(0)}</mark>", content_escaped
-            )
+            content_escaped = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", content_escaped)
 
         rows.append(
             f"<tr><td class='content-cell'>{content_escaped}</td>"
@@ -982,7 +996,7 @@ def _render_conflicts_page(
 
     filter_form = f"""
     <form method="get" action="/dashboard/conflicts" class="filter-bar">
-      <input name="scope" placeholder="Filter by scope…" value="{_esc(scope or '')}">
+      <input name="scope" placeholder="Filter by scope…" value="{_esc(scope or "")}">
       <select name="status">
         {_status_option("open", "Open")}
         {_status_option("resolved", "Resolved")}
