@@ -469,9 +469,7 @@ class BaseStorage(ABC):
     async def insert_tkg_edge(self, edge: dict[str, Any]) -> None: ...
 
     @abstractmethod
-    async def get_active_tkg_edges(
-        self, source_node_id: str, relation_type: str
-    ) -> list[dict]: ...
+    async def get_active_tkg_edges(self, source_node_id: str, relation_type: str) -> list[dict]: ...
 
     @abstractmethod
     async def expire_tkg_edge(self, edge_id: str, expired_at: str) -> None: ...
@@ -485,9 +483,7 @@ class BaseStorage(ABC):
     ) -> list[dict]: ...
 
     @abstractmethod
-    async def get_tkg_nodes_with_expired_edges(
-        self, scope: str | None = None
-    ) -> list[dict]: ...
+    async def get_tkg_nodes_with_expired_edges(self, scope: str | None = None) -> list[dict]: ...
 
     @abstractmethod
     async def get_old_active_tkg_edges(
@@ -495,19 +491,13 @@ class BaseStorage(ABC):
     ) -> list[dict]: ...
 
     @abstractmethod
-    async def get_newer_tkg_edges(
-        self, source_node_id: str, after: str
-    ) -> list[dict]: ...
+    async def get_newer_tkg_edges(self, source_node_id: str, after: str) -> list[dict]: ...
 
     @abstractmethod
-    async def get_tkg_multi_agent_edges(
-        self, scope: str | None = None
-    ) -> list[dict]: ...
+    async def get_tkg_multi_agent_edges(self, scope: str | None = None) -> list[dict]: ...
 
     @abstractmethod
-    async def get_tkg_stats(
-        self, scope: str | None = None
-    ) -> dict[str, int]: ...
+    async def get_tkg_stats(self, scope: str | None = None) -> dict[str, int]: ...
 
     @abstractmethod
     async def update_tkg_node_summary(self, node_id: str, summary: str) -> None: ...
@@ -2538,9 +2528,7 @@ class SQLiteStorage(BaseStorage):
         )
         await self.db.commit()
 
-    async def get_active_tkg_edges(
-        self, source_node_id: str, relation_type: str
-    ) -> list[dict]:
+    async def get_active_tkg_edges(self, source_node_id: str, relation_type: str) -> list[dict]:
         cur = await self.db.execute(
             """SELECT * FROM tkg_edges
                WHERE source_node_id = ? AND relation_type = ? AND expired_at IS NULL
@@ -2598,9 +2586,7 @@ class SQLiteStorage(BaseStorage):
                 )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def get_tkg_nodes_with_expired_edges(
-        self, scope: str | None = None
-    ) -> list[dict]:
+    async def get_tkg_nodes_with_expired_edges(self, scope: str | None = None) -> list[dict]:
         if scope:
             cur = await self.db.execute(
                 """SELECT DISTINCT n.* FROM tkg_nodes n
@@ -2642,9 +2628,7 @@ class SQLiteStorage(BaseStorage):
             )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def get_newer_tkg_edges(
-        self, source_node_id: str, after: str
-    ) -> list[dict]:
+    async def get_newer_tkg_edges(self, source_node_id: str, after: str) -> list[dict]:
         cur = await self.db.execute(
             """SELECT * FROM tkg_edges
                WHERE source_node_id = ? AND created_at > ?
@@ -2653,9 +2637,7 @@ class SQLiteStorage(BaseStorage):
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def get_tkg_multi_agent_edges(
-        self, scope: str | None = None
-    ) -> list[dict]:
+    async def get_tkg_multi_agent_edges(self, scope: str | None = None) -> list[dict]:
         """Return active edges where the same source+relation has edges from multiple agents."""
         if scope:
             cur = await self.db.execute(
@@ -2687,9 +2669,7 @@ class SQLiteStorage(BaseStorage):
             )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def get_tkg_stats(
-        self, scope: str | None = None
-    ) -> dict[str, int]:
+    async def get_tkg_stats(self, scope: str | None = None) -> dict[str, int]:
         stats: dict[str, int] = {}
         cur = await self.db.execute(
             "SELECT COUNT(*) FROM tkg_nodes WHERE workspace_id = ?",

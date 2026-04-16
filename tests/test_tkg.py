@@ -515,7 +515,6 @@ async def test_numeric_entities_create_edges(storage: Storage):
     assert has_value_edges[0].fact_label == "rate_limit = 1000"
 
 
-
 # ── Graphiti-inspired features ───────────────────────────────────────
 
 
@@ -618,7 +617,7 @@ async def test_temporal_ordering_respects_valid_at(storage: Storage):
     active = [e for e in uses_edges if e["expired_at"] is None]
 
     assert len(expired) == 1  # Redis edge expired
-    assert len(active) == 1   # Memcached edge active
+    assert len(active) == 1  # Memcached edge active
 
     # The expired edge's expired_at should be the new edge's valid_at
     assert expired[0]["expired_at"] == "2025-01-20T10:00:00+00:00"

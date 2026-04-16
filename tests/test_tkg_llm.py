@@ -115,24 +115,26 @@ class TestResolveNodeName:
 @pytest.mark.asyncio
 async def test_extract_triplets_parses_response():
     """extract_triplets correctly parses a well-formed OpenAI response."""
-    llm_response = json.dumps({
-        "triplets": [
-            {
-                "subject": "auth service",
-                "relation": "uses",
-                "object": "redis",
-                "fact_label": "The auth service uses Redis for caching",
-            },
-            {
-                "subject": "auth service",
-                "relation": "runs_on",
-                "object": "kubernetes",
-                "fact_label": "The auth service runs on Kubernetes",
-            },
-        ],
-        "valid_at": "2025-01-15T10:00:00+00:00",
-        "invalid_at": None,
-    })
+    llm_response = json.dumps(
+        {
+            "triplets": [
+                {
+                    "subject": "auth service",
+                    "relation": "uses",
+                    "object": "redis",
+                    "fact_label": "The auth service uses Redis for caching",
+                },
+                {
+                    "subject": "auth service",
+                    "relation": "runs_on",
+                    "object": "kubernetes",
+                    "fact_label": "The auth service runs on Kubernetes",
+                },
+            ],
+            "valid_at": "2025-01-15T10:00:00+00:00",
+            "invalid_at": None,
+        }
+    )
 
     with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
         with _patch_httpx(llm_response):
@@ -148,11 +150,20 @@ async def test_extract_triplets_parses_response():
 @pytest.mark.asyncio
 async def test_extract_triplets_handles_markdown_fences():
     """extract_triplets strips markdown code fences from response."""
-    inner = json.dumps({
-        "triplets": [{"subject": "api", "relation": "uses", "object": "graphql", "fact_label": "API uses GraphQL"}],
-        "valid_at": None,
-        "invalid_at": None,
-    })
+    inner = json.dumps(
+        {
+            "triplets": [
+                {
+                    "subject": "api",
+                    "relation": "uses",
+                    "object": "graphql",
+                    "fact_label": "API uses GraphQL",
+                }
+            ],
+            "valid_at": None,
+            "invalid_at": None,
+        }
+    )
     llm_response = f"```json\n{inner}\n```"
 
     with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
@@ -177,15 +188,17 @@ async def test_extract_triplets_falls_back_on_error():
 @pytest.mark.asyncio
 async def test_extract_triplets_validates_structure():
     """extract_triplets filters out malformed triplets."""
-    llm_response = json.dumps({
-        "triplets": [
-            {"subject": "auth", "relation": "uses", "object": "redis", "fact_label": "ok"},
-            {"subject": "x", "relation": "y"},  # missing object
-            {"subject": "", "relation": "uses", "object": "redis"},  # empty subject
-        ],
-        "valid_at": None,
-        "invalid_at": None,
-    })
+    llm_response = json.dumps(
+        {
+            "triplets": [
+                {"subject": "auth", "relation": "uses", "object": "redis", "fact_label": "ok"},
+                {"subject": "x", "relation": "y"},  # missing object
+                {"subject": "", "relation": "uses", "object": "redis"},  # empty subject
+            ],
+            "valid_at": None,
+            "invalid_at": None,
+        }
+    )
 
     with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
         with _patch_httpx(llm_response):
@@ -209,10 +222,12 @@ async def test_extract_triplets_no_api_key():
 @pytest.mark.asyncio
 async def test_check_edge_duplicate_detects_duplicate():
     """check_edge_duplicate identifies a semantic duplicate."""
-    llm_response = json.dumps({
-        "is_duplicate_of": 0,
-        "contradicts": [],
-    })
+    llm_response = json.dumps(
+        {
+            "is_duplicate_of": 0,
+            "contradicts": [],
+        }
+    )
 
     with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
         with _patch_httpx(llm_response):
@@ -228,10 +243,12 @@ async def test_check_edge_duplicate_detects_duplicate():
 @pytest.mark.asyncio
 async def test_check_edge_duplicate_detects_contradiction():
     """check_edge_duplicate identifies a contradiction."""
-    llm_response = json.dumps({
-        "is_duplicate_of": None,
-        "contradicts": [0],
-    })
+    llm_response = json.dumps(
+        {
+            "is_duplicate_of": None,
+            "contradicts": [0],
+        }
+    )
 
     with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
         with _patch_httpx(llm_response):

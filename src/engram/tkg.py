@@ -242,9 +242,28 @@ _RELATIONSHIP_PATTERNS: list[tuple[re.Pattern[str], str, str, str]] = [
 
 # Stop words that should not be entity nodes
 _STOP_SUBJECTS = {
-    "the", "this", "that", "it", "we", "they", "our", "there",
-    "which", "what", "who", "how", "when", "where", "why",
-    "also", "just", "now", "then", "here", "very", "been",
+    "the",
+    "this",
+    "that",
+    "it",
+    "we",
+    "they",
+    "our",
+    "there",
+    "which",
+    "what",
+    "who",
+    "how",
+    "when",
+    "where",
+    "why",
+    "also",
+    "just",
+    "now",
+    "then",
+    "here",
+    "very",
+    "been",
 }
 
 
@@ -264,9 +283,9 @@ def extract_relationships(content: str) -> list[dict[str, str]]:
             # Strip leading articles
             for article in ("the ", "a ", "an "):
                 if subject.startswith(article):
-                    subject = subject[len(article):]
+                    subject = subject[len(article) :]
                 if obj.startswith(article):
-                    obj = obj[len(article):]
+                    obj = obj[len(article) :]
 
             # Filter out stop words and very short subjects
             if subject in _STOP_SUBJECTS or obj in _STOP_SUBJECTS:
@@ -277,12 +296,14 @@ def extract_relationships(content: str) -> list[dict[str, str]]:
             key = f"{subject}:{relation}:{obj}"
             if key not in seen:
                 seen.add(key)
-                relationships.append({
-                    "subject": subject,
-                    "relation": relation,
-                    "object": obj,
-                    "fact_label": m.group(0).strip(),
-                })
+                relationships.append(
+                    {
+                        "subject": subject,
+                        "relation": relation,
+                        "object": obj,
+                        "fact_label": m.group(0).strip(),
+                    }
+                )
 
     return relationships
 
@@ -378,12 +399,14 @@ class TemporalKnowledgeGraph:
         if entities:
             for ent in entities:
                 if ent.get("type") == "numeric" and ent.get("value") is not None:
-                    rels.append({
-                        "subject": ent["name"],
-                        "relation": "has_value",
-                        "object": str(ent["value"]),
-                        "fact_label": f"{ent['name']} = {ent['value']}",
-                    })
+                    rels.append(
+                        {
+                            "subject": ent["name"],
+                            "relation": "has_value",
+                            "object": str(ent["value"]),
+                            "fact_label": f"{ent['name']} = {ent['value']}",
+                        }
+                    )
 
         for rel in rels:
             # Upsert source and target nodes (with embedding-based dedup in LLM mode)
@@ -679,22 +702,24 @@ class TemporalKnowledgeGraph:
         for edge in edges:
             source = await self.storage.get_tkg_node_by_id(edge["source_node_id"])
             target = await self.storage.get_tkg_node_by_id(edge["target_node_id"])
-            timeline.append({
-                "edge_id": edge["id"],
-                "source": source["name"] if source else edge["source_node_id"],
-                "relation": edge["relation_type"],
-                "target": target["name"] if target else edge["target_node_id"],
-                "fact_label": edge["fact_label"],
-                "fact_id": edge["fact_id"],
-                "agent_id": edge["agent_id"],
-                "scope": edge["scope"],
-                "created_at": edge["created_at"],
-                "expired_at": edge["expired_at"],
-                "valid_at": edge["valid_at"],
-                "invalid_at": edge["invalid_at"],
-                "is_active": edge["expired_at"] is None,
-                "confidence": edge["confidence"],
-            })
+            timeline.append(
+                {
+                    "edge_id": edge["id"],
+                    "source": source["name"] if source else edge["source_node_id"],
+                    "relation": edge["relation_type"],
+                    "target": target["name"] if target else edge["target_node_id"],
+                    "fact_label": edge["fact_label"],
+                    "fact_id": edge["fact_id"],
+                    "agent_id": edge["agent_id"],
+                    "scope": edge["scope"],
+                    "created_at": edge["created_at"],
+                    "expired_at": edge["expired_at"],
+                    "valid_at": edge["valid_at"],
+                    "invalid_at": edge["invalid_at"],
+                    "is_active": edge["expired_at"] is None,
+                    "confidence": edge["confidence"],
+                }
+            )
         return sorted(timeline, key=lambda e: e["created_at"])
 
     async def detect_reversals(
@@ -752,30 +777,43 @@ class TemporalKnowledgeGraph:
                     t_c, edge_c = targets[i + 2]
 
                     if t_a == t_c and t_a != t_b:
-                        reversals.append({
-                            "type": "reversal",
-                            "entity": node_name,
-                            "relation": relation,
-                            "sequence": [
-                                {"target": t_a, "agent_id": edge_a["agent_id"],
-                                 "at": edge_a["created_at"]},
-                                {"target": t_b, "agent_id": edge_b["agent_id"],
-                                 "at": edge_b["created_at"]},
-                                {"target": t_c, "agent_id": edge_c["agent_id"],
-                                 "at": edge_c["created_at"]},
-                            ],
-                            "explanation": (
-                                f'Reversal on "{node_name}": '
-                                f"{relation} changed {t_a} → {t_b} → {t_a}. "
-                                f"A new agent would not know which state is current."
-                            ),
-                            "severity": (
-                                "high"
-                                if len({edge_a["agent_id"], edge_b["agent_id"],
-                                        edge_c["agent_id"]}) > 1
-                                else "medium"
-                            ),
-                        })
+                        reversals.append(
+                            {
+                                "type": "reversal",
+                                "entity": node_name,
+                                "relation": relation,
+                                "sequence": [
+                                    {
+                                        "target": t_a,
+                                        "agent_id": edge_a["agent_id"],
+                                        "at": edge_a["created_at"],
+                                    },
+                                    {
+                                        "target": t_b,
+                                        "agent_id": edge_b["agent_id"],
+                                        "at": edge_b["created_at"],
+                                    },
+                                    {
+                                        "target": t_c,
+                                        "agent_id": edge_c["agent_id"],
+                                        "at": edge_c["created_at"],
+                                    },
+                                ],
+                                "explanation": (
+                                    f'Reversal on "{node_name}": '
+                                    f"{relation} changed {t_a} → {t_b} → {t_a}. "
+                                    f"A new agent would not know which state is current."
+                                ),
+                                "severity": (
+                                    "high"
+                                    if len(
+                                        {edge_a["agent_id"], edge_b["agent_id"], edge_c["agent_id"]}
+                                    )
+                                    > 1
+                                    else "medium"
+                                ),
+                            }
+                        )
 
         return reversals
 
@@ -812,24 +850,26 @@ class TemporalKnowledgeGraph:
                 source_name = source["name"] if source else "unknown"
                 target_name = target["name"] if target else "unknown"
 
-                stale.append({
-                    "type": "stale_edge",
-                    "edge_id": edge["id"],
-                    "entity": source_name,
-                    "relation": edge["relation_type"],
-                    "target": target_name,
-                    "created_at": edge["created_at"],
-                    "age_days": (
-                        cutoff - datetime.fromisoformat(edge["created_at"])
-                    ).days if edge["created_at"] else 0,
-                    "newer_edge_count": len(newer),
-                    "explanation": (
-                        f'Potentially stale: "{source_name} {edge["relation_type"]} '
-                        f'{target_name}" was asserted {edge["created_at"][:10]} '
-                        f"but {len(newer)} newer edge(s) exist on this entity."
-                    ),
-                    "severity": "low",
-                })
+                stale.append(
+                    {
+                        "type": "stale_edge",
+                        "edge_id": edge["id"],
+                        "entity": source_name,
+                        "relation": edge["relation_type"],
+                        "target": target_name,
+                        "created_at": edge["created_at"],
+                        "age_days": (cutoff - datetime.fromisoformat(edge["created_at"])).days
+                        if edge["created_at"]
+                        else 0,
+                        "newer_edge_count": len(newer),
+                        "explanation": (
+                            f'Potentially stale: "{source_name} {edge["relation_type"]} '
+                            f'{target_name}" was asserted {edge["created_at"][:10]} '
+                            f"but {len(newer)} newer edge(s) exist on this entity."
+                        ),
+                        "severity": "low",
+                    }
+                )
 
         return stale
 
@@ -893,20 +933,22 @@ class TemporalKnowledgeGraph:
 
                 unique_targets = set(agent_targets.values())
                 if len(unique_targets) > 1:
-                    drift_cases.append({
-                        "type": "belief_drift",
-                        "entity": node_name,
-                        "relation": relation,
-                        "agent_beliefs": agent_targets,
-                        "explanation": (
-                            f'Belief drift on "{node_name}" ({relation}): '
-                            + ", ".join(
-                                f"{agent} believes '{target}'"
-                                for agent, target in agent_targets.items()
-                            )
-                        ),
-                        "severity": "high" if len(unique_targets) > 2 else "medium",
-                    })
+                    drift_cases.append(
+                        {
+                            "type": "belief_drift",
+                            "entity": node_name,
+                            "relation": relation,
+                            "agent_beliefs": agent_targets,
+                            "explanation": (
+                                f'Belief drift on "{node_name}" ({relation}): '
+                                + ", ".join(
+                                    f"{agent} believes '{target}'"
+                                    for agent, target in agent_targets.items()
+                                )
+                            ),
+                            "severity": "high" if len(unique_targets) > 2 else "medium",
+                        }
+                    )
 
         return drift_cases
 

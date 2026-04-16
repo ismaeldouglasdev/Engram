@@ -268,9 +268,7 @@ async def check_edge_duplicate(
     if not existing_fact_labels:
         return {"is_duplicate_of": None, "contradicts": []}
 
-    existing_text = "\n".join(
-        f"  [{i}] {label}" for i, label in enumerate(existing_fact_labels)
-    )
+    existing_text = "\n".join(f"  [{i}] {label}" for i, label in enumerate(existing_fact_labels))
     prompt = f"EXISTING FACTS:\n{existing_text}\n\nNEW FACT: {new_fact_label}"
 
     raw = await _chat(_DEDUP_SYSTEM, prompt, max_tokens=256)
