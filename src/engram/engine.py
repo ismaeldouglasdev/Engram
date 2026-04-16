@@ -21,6 +21,7 @@ from engram import embeddings
 from engram.entities import extract_entities, extract_keywords
 from engram.secrets import scan_for_secrets
 from engram.storage import BaseStorage
+from engram.tkg import TemporalKnowledgeGraph
 
 logger = logging.getLogger("engram")
 
@@ -129,6 +130,7 @@ class EngramEngine:
 
     def __init__(self, storage: BaseStorage) -> None:
         self.storage = storage
+        self.tkg = TemporalKnowledgeGraph(storage)
         # Detection queue: fact IDs waiting for async conflict scan
         self._detection_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
         self._suggestion_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=500)
@@ -1042,6 +1044,8 @@ class EngramEngine:
                     # Re-generate embedding for facts that arrived without one
                     # (e.g. federated facts ingested from remote workspaces)
                     await self._ensure_embedding(fact_id)
+                    # Ingest into the temporal knowledge graph
+                    await self._ingest_into_tkg(fact_id)
                     await self._scan_fact_for_conflicts(fact_id)
                 except Exception:
                     logger.exception("Detection error for fact %s", fact_id)
@@ -1062,6 +1066,31 @@ class EngramEngine:
             logger.debug("Re-generated embedding for fact %s", fact_id[:12])
         except Exception:
             logger.debug("Failed to generate embedding for fact %s", fact_id[:12])
+
+    async def _ingest_into_tkg(self, fact_id: str) -> None:
+        """Decompose a fact into TKG nodes and edges."""
+        fact = await self.storage.get_fact_by_id(fact_id)
+        if not fact:
+            return
+        try:
+            entities = _load_entities(fact.get("entities"))
+            edges = await self.tkg.ingest_fact(
+                fact_id=fact_id,
+                content=fact.get("content", ""),
+                scope=fact.get("scope", "general"),
+                agent_id=fact.get("agent_id", "unknown"),
+                committed_at=fact.get("committed_at", ""),
+                confidence=float(fact.get("confidence", 0.8)),
+                entities=entities,
+            )
+            if edges:
+                logger.debug(
+                    "TKG: ingested fact %s → %d edge(s)",
+                    fact_id[:12],
+                    len(edges),
+                )
+        except Exception:
+            logger.debug("TKG ingestion failed for fact %s", fact_id[:12])
 
     async def _scan_fact_for_conflicts(self, fact_id: str) -> None:
         """Compare a single fact against all current facts in its scope and cross-scope.
@@ -1282,6 +1311,58 @@ class EngramEngine:
                             fact_id[:8],
                             other["id"][:8],
                         )
+
+        # ── Tier 3: TKG reversal detection ────────────────────────────
+        # After ingesting the fact into the TKG (done in _detection_worker),
+        # check if this fact created any reversal patterns (A→B→A).
+        try:
+            reversals = await self.tkg.detect_reversals(scope=scope)
+            for rev in reversals:
+                # Find the fact IDs involved in the reversal
+                seq = rev.get("sequence", [])
+                if len(seq) < 3:
+                    continue
+                # The conflict is between the first and last assertions
+                # (which assert the same thing, creating confusion)
+                first_fact_id = None
+                last_fact_id = fact_id  # current fact triggered this
+
+                # Try to find the first fact in the sequence via TKG edges
+                entity_name = rev.get("entity", "")
+                relation = rev.get("relation", "")
+                timeline = await self.tkg.get_entity_timeline(entity_name, relation)
+                if len(timeline) >= 3:
+                    first_fact_id = timeline[0].get("fact_id")
+
+                if first_fact_id and first_fact_id != fact_id:
+                    # Check we haven't already flagged this pair
+                    if not await self.storage.conflict_exists(first_fact_id, fact_id):
+                        cid = uuid.uuid4().hex
+                        await self.storage.insert_conflict(
+                            {
+                                "id": cid,
+                                "fact_a_id": first_fact_id,
+                                "fact_b_id": fact_id,
+                                "detected_at": now,
+                                "detection_tier": "tier3_tkg_reversal",
+                                "nli_score": None,
+                                "explanation": rev["explanation"],
+                                "severity": rev.get("severity", "high"),
+                                "status": "open",
+                            }
+                        )
+                        try:
+                            self._suggestion_queue.put_nowait(cid)
+                        except asyncio.QueueFull:
+                            pass
+                        logger.info(
+                            "TKG reversal detected: %s (facts %s, %s)",
+                            rev["explanation"][:80],
+                            first_fact_id[:8],
+                            fact_id[:8],
+                        )
+        except Exception:
+            logger.debug("TKG reversal detection failed for fact %s", fact_id[:8])
 
     async def get_conflicts(
         self, scope: str | None = None, status: str = "open"
@@ -1823,6 +1904,53 @@ class EngramEngine:
             "failed": failed,
             "results": results,
         }
+
+    # ── Temporal Knowledge Graph queries ─────────────────────────────
+
+    async def get_entity_timeline(
+        self,
+        entity_name: str,
+        relation_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the chronological belief history for an entity.
+
+        Shows how beliefs about this entity evolved over time, including
+        which agent made each assertion and when edges were invalidated.
+        """
+        return await self.tkg.get_entity_timeline(entity_name, relation_type)
+
+    async def get_tkg_reversals(
+        self,
+        scope: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Detect A→B→A reversal patterns in the temporal knowledge graph.
+
+        Returns a list of reversal descriptions with the entity, relation,
+        sequence of changes, and severity.
+        """
+        return await self.tkg.detect_reversals(scope=scope)
+
+    async def get_tkg_stale_edges(
+        self,
+        max_age_days: int = 30,
+        scope: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Find active TKG edges that may be stale."""
+        return await self.tkg.detect_stale_edges(max_age_days=max_age_days, scope=scope)
+
+    async def get_tkg_belief_drift(
+        self,
+        scope: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Detect belief drift across agents in the TKG."""
+        return await self.tkg.detect_belief_drift(scope=scope)
+
+    async def get_tkg_summary(
+        self,
+        scope: str | None = None,
+    ) -> dict[str, Any]:
+        """Return a summary of the temporal knowledge graph state."""
+        return await self.tkg.get_graph_summary(scope=scope)
 
     # ── Suggestion Worker ────────────────────────────────────────────
 

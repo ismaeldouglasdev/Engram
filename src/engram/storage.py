@@ -451,6 +451,70 @@ class BaseStorage(ABC):
     @abstractmethod
     async def mark_usage_events_synced(self, event_ids: list[str]) -> None: ...
 
+    # ── Temporal Knowledge Graph (TKG) ───────────────────────────────
+
+    @abstractmethod
+    async def insert_tkg_node(self, node: dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    async def get_tkg_node_by_name(self, name: str) -> dict | None: ...
+
+    @abstractmethod
+    async def get_tkg_node_by_id(self, node_id: str) -> dict | None: ...
+
+    @abstractmethod
+    async def update_tkg_node_seen(self, node_id: str, timestamp: str) -> None: ...
+
+    @abstractmethod
+    async def insert_tkg_edge(self, edge: dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    async def get_active_tkg_edges(
+        self, source_node_id: str, relation_type: str
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    async def expire_tkg_edge(self, edge_id: str, expired_at: str) -> None: ...
+
+    @abstractmethod
+    async def get_tkg_edges_for_node(
+        self,
+        node_id: str,
+        relation_type: str | None = None,
+        include_expired: bool = True,
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    async def get_tkg_nodes_with_expired_edges(
+        self, scope: str | None = None
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    async def get_old_active_tkg_edges(
+        self, max_age_days: int = 30, scope: str | None = None
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    async def get_newer_tkg_edges(
+        self, source_node_id: str, after: str
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    async def get_tkg_multi_agent_edges(
+        self, scope: str | None = None
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    async def get_tkg_stats(
+        self, scope: str | None = None
+    ) -> dict[str, int]: ...
+
+    @abstractmethod
+    async def update_tkg_node_summary(self, node_id: str, summary: str) -> None: ...
+
+    @abstractmethod
+    async def get_all_tkg_nodes(self) -> list[dict]: ...
+
 
 class SQLiteStorage(BaseStorage):
     """Async SQLite storage with WAL mode and FTS5."""
@@ -2401,6 +2465,284 @@ class SQLiteStorage(BaseStorage):
 
         await self.db.commit()
         return stats
+
+    # ── Temporal Knowledge Graph (TKG) ───────────────────────────────
+
+    async def insert_tkg_node(self, node: dict[str, Any]) -> None:
+        await self.db.execute(
+            """INSERT INTO tkg_nodes (id, name, entity_type, summary, first_seen, last_seen, fact_count, workspace_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                node["id"],
+                node["name"],
+                node["entity_type"],
+                node.get("summary", ""),
+                node["first_seen"],
+                node["last_seen"],
+                node.get("fact_count", 1),
+                node.get("workspace_id", self.workspace_id),
+            ),
+        )
+        await self.db.commit()
+
+    async def get_tkg_node_by_name(self, name: str) -> dict | None:
+        cur = await self.db.execute(
+            "SELECT * FROM tkg_nodes WHERE name = ? AND workspace_id = ?",
+            (name, self.workspace_id),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    async def get_tkg_node_by_id(self, node_id: str) -> dict | None:
+        cur = await self.db.execute(
+            "SELECT * FROM tkg_nodes WHERE id = ?",
+            (node_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    async def update_tkg_node_seen(self, node_id: str, timestamp: str) -> None:
+        await self.db.execute(
+            "UPDATE tkg_nodes SET last_seen = ?, fact_count = fact_count + 1 WHERE id = ?",
+            (timestamp, node_id),
+        )
+        await self.db.commit()
+
+    async def insert_tkg_edge(self, edge: dict[str, Any]) -> None:
+        await self.db.execute(
+            """INSERT INTO tkg_edges
+               (id, source_node_id, target_node_id, relation_type, fact_label,
+                fact_id, agent_id, scope, created_at, expired_at, valid_at,
+                invalid_at, confidence, workspace_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                edge["id"],
+                edge["source_node_id"],
+                edge["target_node_id"],
+                edge["relation_type"],
+                edge["fact_label"],
+                edge["fact_id"],
+                edge["agent_id"],
+                edge["scope"],
+                edge["created_at"],
+                edge.get("expired_at"),
+                edge.get("valid_at"),
+                edge.get("invalid_at"),
+                edge.get("confidence", 0.8),
+                edge.get("workspace_id", self.workspace_id),
+            ),
+        )
+        await self.db.commit()
+
+    async def get_active_tkg_edges(
+        self, source_node_id: str, relation_type: str
+    ) -> list[dict]:
+        cur = await self.db.execute(
+            """SELECT * FROM tkg_edges
+               WHERE source_node_id = ? AND relation_type = ? AND expired_at IS NULL
+               AND workspace_id = ?""",
+            (source_node_id, relation_type, self.workspace_id),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def expire_tkg_edge(self, edge_id: str, expired_at: str) -> None:
+        await self.db.execute(
+            "UPDATE tkg_edges SET expired_at = ? WHERE id = ?",
+            (expired_at, edge_id),
+        )
+        await self.db.commit()
+
+    async def get_tkg_edges_for_node(
+        self,
+        node_id: str,
+        relation_type: str | None = None,
+        include_expired: bool = True,
+    ) -> list[dict]:
+        if relation_type:
+            if include_expired:
+                cur = await self.db.execute(
+                    """SELECT * FROM tkg_edges
+                       WHERE (source_node_id = ? OR target_node_id = ?)
+                       AND relation_type = ? AND workspace_id = ?
+                       ORDER BY created_at""",
+                    (node_id, node_id, relation_type, self.workspace_id),
+                )
+            else:
+                cur = await self.db.execute(
+                    """SELECT * FROM tkg_edges
+                       WHERE (source_node_id = ? OR target_node_id = ?)
+                       AND relation_type = ? AND expired_at IS NULL AND workspace_id = ?
+                       ORDER BY created_at""",
+                    (node_id, node_id, relation_type, self.workspace_id),
+                )
+        else:
+            if include_expired:
+                cur = await self.db.execute(
+                    """SELECT * FROM tkg_edges
+                       WHERE (source_node_id = ? OR target_node_id = ?)
+                       AND workspace_id = ?
+                       ORDER BY created_at""",
+                    (node_id, node_id, self.workspace_id),
+                )
+            else:
+                cur = await self.db.execute(
+                    """SELECT * FROM tkg_edges
+                       WHERE (source_node_id = ? OR target_node_id = ?)
+                       AND expired_at IS NULL AND workspace_id = ?
+                       ORDER BY created_at""",
+                    (node_id, node_id, self.workspace_id),
+                )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_tkg_nodes_with_expired_edges(
+        self, scope: str | None = None
+    ) -> list[dict]:
+        if scope:
+            cur = await self.db.execute(
+                """SELECT DISTINCT n.* FROM tkg_nodes n
+                   JOIN tkg_edges e ON n.id = e.source_node_id
+                   WHERE e.expired_at IS NOT NULL AND e.scope = ?
+                   AND n.workspace_id = ?""",
+                (scope, self.workspace_id),
+            )
+        else:
+            cur = await self.db.execute(
+                """SELECT DISTINCT n.* FROM tkg_nodes n
+                   JOIN tkg_edges e ON n.id = e.source_node_id
+                   WHERE e.expired_at IS NOT NULL
+                   AND n.workspace_id = ?""",
+                (self.workspace_id,),
+            )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_old_active_tkg_edges(
+        self, max_age_days: int = 30, scope: str | None = None
+    ) -> list[dict]:
+        cutoff = datetime.now(timezone.utc).isoformat()
+        # Use string comparison for ISO timestamps — works for SQLite
+        if scope:
+            cur = await self.db.execute(
+                """SELECT * FROM tkg_edges
+                   WHERE expired_at IS NULL AND scope = ?
+                   AND julianday(?) - julianday(created_at) > ?
+                   AND workspace_id = ?""",
+                (scope, cutoff, max_age_days, self.workspace_id),
+            )
+        else:
+            cur = await self.db.execute(
+                """SELECT * FROM tkg_edges
+                   WHERE expired_at IS NULL
+                   AND julianday(?) - julianday(created_at) > ?
+                   AND workspace_id = ?""",
+                (cutoff, max_age_days, self.workspace_id),
+            )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_newer_tkg_edges(
+        self, source_node_id: str, after: str
+    ) -> list[dict]:
+        cur = await self.db.execute(
+            """SELECT * FROM tkg_edges
+               WHERE source_node_id = ? AND created_at > ?
+               AND workspace_id = ?""",
+            (source_node_id, after, self.workspace_id),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_tkg_multi_agent_edges(
+        self, scope: str | None = None
+    ) -> list[dict]:
+        """Return active edges where the same source+relation has edges from multiple agents."""
+        if scope:
+            cur = await self.db.execute(
+                """SELECT e.* FROM tkg_edges e
+                   WHERE e.expired_at IS NULL AND e.scope = ? AND e.workspace_id = ?
+                   AND EXISTS (
+                       SELECT 1 FROM tkg_edges e2
+                       WHERE e2.source_node_id = e.source_node_id
+                       AND e2.relation_type = e.relation_type
+                       AND e2.agent_id != e.agent_id
+                       AND e2.expired_at IS NULL
+                       AND e2.workspace_id = e.workspace_id
+                   )""",
+                (scope, self.workspace_id),
+            )
+        else:
+            cur = await self.db.execute(
+                """SELECT e.* FROM tkg_edges e
+                   WHERE e.expired_at IS NULL AND e.workspace_id = ?
+                   AND EXISTS (
+                       SELECT 1 FROM tkg_edges e2
+                       WHERE e2.source_node_id = e.source_node_id
+                       AND e2.relation_type = e.relation_type
+                       AND e2.agent_id != e.agent_id
+                       AND e2.expired_at IS NULL
+                       AND e2.workspace_id = e.workspace_id
+                   )""",
+                (self.workspace_id,),
+            )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_tkg_stats(
+        self, scope: str | None = None
+    ) -> dict[str, int]:
+        stats: dict[str, int] = {}
+        cur = await self.db.execute(
+            "SELECT COUNT(*) FROM tkg_nodes WHERE workspace_id = ?",
+            (self.workspace_id,),
+        )
+        stats["total_nodes"] = (await cur.fetchone())[0]
+
+        if scope:
+            cur = await self.db.execute(
+                "SELECT COUNT(*) FROM tkg_edges WHERE workspace_id = ? AND scope = ?",
+                (self.workspace_id, scope),
+            )
+        else:
+            cur = await self.db.execute(
+                "SELECT COUNT(*) FROM tkg_edges WHERE workspace_id = ?",
+                (self.workspace_id,),
+            )
+        stats["total_edges"] = (await cur.fetchone())[0]
+
+        if scope:
+            cur = await self.db.execute(
+                "SELECT COUNT(*) FROM tkg_edges WHERE expired_at IS NULL AND workspace_id = ? AND scope = ?",
+                (self.workspace_id, scope),
+            )
+        else:
+            cur = await self.db.execute(
+                "SELECT COUNT(*) FROM tkg_edges WHERE expired_at IS NULL AND workspace_id = ?",
+                (self.workspace_id,),
+            )
+        stats["active_edges"] = (await cur.fetchone())[0]
+        stats["expired_edges"] = stats["total_edges"] - stats["active_edges"]
+
+        cur = await self.db.execute(
+            "SELECT COUNT(DISTINCT relation_type) FROM tkg_edges WHERE workspace_id = ?",
+            (self.workspace_id,),
+        )
+        stats["unique_relations"] = (await cur.fetchone())[0]
+
+        return stats
+
+    async def update_tkg_node_summary(self, node_id: str, summary: str) -> None:
+        await self.db.execute(
+            "UPDATE tkg_nodes SET summary = ? WHERE id = ?",
+            (summary, node_id),
+        )
+        await self.db.commit()
+
+    async def get_all_tkg_nodes(self) -> list[dict]:
+        cur = await self.db.execute(
+            "SELECT * FROM tkg_nodes WHERE workspace_id = ?",
+            (self.workspace_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
 
 def _now_iso() -> str:

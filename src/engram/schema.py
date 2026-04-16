@@ -21,7 +21,7 @@ Two schemas are maintained:
 - POSTGRES_SCHEMA_SQL: PostgreSQL (team mode, asyncpg)
 """
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 
 # Incremental ALTER TABLE migrations keyed by target version.
 MIGRATIONS: dict[int, list[str]] = {
@@ -142,6 +142,45 @@ MIGRATIONS: dict[int, list[str]] = {
             synced_to_stripe INTEGER NOT NULL DEFAULT 0
         )""",
         "CREATE INDEX IF NOT EXISTS idx_usage_events_workspace_period ON usage_events(workspace_id, billing_period)",
+    ],
+    11: [
+        # Temporal Knowledge Graph: entity nodes
+        """CREATE TABLE IF NOT EXISTS tkg_nodes (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            entity_type     TEXT NOT NULL,
+            summary         TEXT NOT NULL DEFAULT '',
+            first_seen      TEXT NOT NULL,
+            last_seen       TEXT NOT NULL,
+            fact_count      INTEGER NOT NULL DEFAULT 1,
+            workspace_id    TEXT NOT NULL DEFAULT 'local'
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tkg_nodes_name ON tkg_nodes(name, workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_nodes_type ON tkg_nodes(entity_type)",
+    ],
+    12: [
+        # Temporal Knowledge Graph: bi-temporal edges
+        """CREATE TABLE IF NOT EXISTS tkg_edges (
+            id              TEXT PRIMARY KEY,
+            source_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+            target_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+            relation_type   TEXT NOT NULL,
+            fact_label      TEXT NOT NULL,
+            fact_id         TEXT NOT NULL,
+            agent_id        TEXT NOT NULL,
+            scope           TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            expired_at      TEXT,
+            valid_at        TEXT,
+            invalid_at      TEXT,
+            confidence      REAL NOT NULL DEFAULT 0.8,
+            workspace_id    TEXT NOT NULL DEFAULT 'local'
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_source ON tkg_edges(source_node_id, relation_type)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_target ON tkg_edges(target_node_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_fact ON tkg_edges(fact_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_active ON tkg_edges(expired_at)",
+        "CREATE INDEX IF NOT EXISTS idx_tkg_edges_scope ON tkg_edges(scope)",
     ],
 }
 
@@ -393,6 +432,45 @@ CREATE TABLE IF NOT EXISTS fact_archives (
 );
 
 CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
+
+-- Temporal Knowledge Graph: entity nodes
+CREATE TABLE IF NOT EXISTS tkg_nodes (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    entity_type     TEXT NOT NULL,
+    summary         TEXT NOT NULL DEFAULT '',
+    first_seen      TEXT NOT NULL,
+    last_seen       TEXT NOT NULL,
+    fact_count      INTEGER NOT NULL DEFAULT 1,
+    workspace_id    TEXT NOT NULL DEFAULT 'local'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tkg_nodes_name ON tkg_nodes(name, workspace_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_nodes_type ON tkg_nodes(entity_type);
+
+-- Temporal Knowledge Graph: bi-temporal edges
+CREATE TABLE IF NOT EXISTS tkg_edges (
+    id              TEXT PRIMARY KEY,
+    source_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+    target_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+    relation_type   TEXT NOT NULL,
+    fact_label      TEXT NOT NULL,
+    fact_id         TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    expired_at      TEXT,
+    valid_at        TEXT,
+    invalid_at      TEXT,
+    confidence      REAL NOT NULL DEFAULT 0.8,
+    workspace_id    TEXT NOT NULL DEFAULT 'local'
+);
+
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_source ON tkg_edges(source_node_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_target ON tkg_edges(target_node_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_fact ON tkg_edges(fact_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_active ON tkg_edges(expired_at);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_scope ON tkg_edges(scope);
 """
 
 # ── Post-migration indexes (SQLite) ─────────────────────────────────
@@ -627,4 +705,43 @@ CREATE TABLE IF NOT EXISTS fact_archives (
 );
 
 CREATE INDEX IF NOT EXISTS idx_fact_archives_lineage ON fact_archives(lineage_id, workspace_id);
+
+-- Temporal Knowledge Graph: entity nodes
+CREATE TABLE IF NOT EXISTS tkg_nodes (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    entity_type     TEXT NOT NULL,
+    summary         TEXT NOT NULL DEFAULT '',
+    first_seen      TIMESTAMPTZ NOT NULL,
+    last_seen       TIMESTAMPTZ NOT NULL,
+    fact_count      INTEGER NOT NULL DEFAULT 1,
+    workspace_id    TEXT NOT NULL DEFAULT 'local'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tkg_nodes_name ON tkg_nodes(name, workspace_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_nodes_type ON tkg_nodes(entity_type);
+
+-- Temporal Knowledge Graph: bi-temporal edges
+CREATE TABLE IF NOT EXISTS tkg_edges (
+    id              TEXT PRIMARY KEY,
+    source_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+    target_node_id  TEXT NOT NULL REFERENCES tkg_nodes(id),
+    relation_type   TEXT NOT NULL,
+    fact_label      TEXT NOT NULL,
+    fact_id         TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL,
+    expired_at      TIMESTAMPTZ,
+    valid_at        TIMESTAMPTZ,
+    invalid_at      TIMESTAMPTZ,
+    confidence      REAL NOT NULL DEFAULT 0.8,
+    workspace_id    TEXT NOT NULL DEFAULT 'local'
+);
+
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_source ON tkg_edges(source_node_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_target ON tkg_edges(target_node_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_fact ON tkg_edges(fact_id);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_active ON tkg_edges(expired_at);
+CREATE INDEX IF NOT EXISTS idx_tkg_edges_scope ON tkg_edges(scope);
 """
