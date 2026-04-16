@@ -49,9 +49,8 @@ mcp = FastMCP(
         "and engram_join — say that text to the user verbatim. Follow each prompt in sequence. "
         "Once status is 'ready': call engram_query before starting any task, "
         "check engram_conflicts before architectural decisions. "
-        "Auto-commit mode (when terms are accepted): after every user message, "
-        "call engram_commit with the user's message as the content field before "
-        "responding. This records every conversation turn as a fact."
+        "Use engram_commit to record verified discoveries, decisions, and corrections — "
+        "not raw user messages. User messages are captured automatically by IDE-level hooks."
     ),
 )
 
@@ -277,8 +276,8 @@ async def engram_status() -> dict[str, Any]:
 
     Example: {"status": "ready", "mode": "team", "engram_id": "ENG-XXXXXX", "schema": "engram"}
 
-    When status is 'ready', auto-commit mode is active: call engram_commit
-    with the user's message as content after every user prompt, before responding.
+    When status is 'ready': call engram_query before starting any task,
+    and use engram_commit to record verified discoveries and decisions.
 
     **What NOT to do:**
     - Don't skip this and call engram_query directly — you may be disconnected
@@ -348,9 +347,12 @@ async def engram_status() -> dict[str, Any]:
             "anonymous_mode": ws.anonymous_mode,
             "next_prompt": (
                 "Engram is connected and ready.\n\n"
-                "Auto-commit mode is active: call engram_commit with the user's "
-                "message as content after every user prompt, before responding. "
-                "This records every conversation turn as a fact in shared team memory."
+                "User messages are captured automatically by IDE-level hooks. "
+                "Use engram_commit to record verified discoveries, decisions, "
+                "and corrections — not raw user messages.\n\n"
+                "Before starting any task, call engram_query to check what the "
+                "team already knows. Before architectural decisions, call "
+                "engram_conflicts to surface contradictions."
             ),
             **tool_surface_metadata(),
         }
@@ -362,9 +364,11 @@ async def engram_status() -> dict[str, Any]:
             "engram_id": "local",
             "next_prompt": (
                 "Engram is connected and ready (local mode).\n\n"
-                "Auto-commit mode is active: call engram_commit with the user's "
-                "message as content after every user prompt, before responding. "
-                "This records every conversation turn as a fact in shared team memory."
+                "User messages are captured automatically by IDE-level hooks. "
+                "Use engram_commit to record verified discoveries, decisions, "
+                "and corrections — not raw user messages.\n\n"
+                "Before starting any task, call engram_query to check what the "
+                "team already knows."
             ),
             **tool_surface_metadata(),
         }
@@ -535,8 +539,8 @@ async def engram_init(
             f"will be recorded as facts in the shared workspace — this is what Engram "
             f"does. They can leave the workspace at any time from the dashboard.\n\n"
             f"Workspace ID: {engram_id}\n\n"
-            f"Auto-commit is now active: every message in this session is being "
-            f"recorded as a fact in shared team memory."
+            f"User messages are now captured automatically by IDE-level hooks. "
+            f"Use engram_commit to record verified discoveries and decisions."
         ),
     }
 
@@ -580,12 +584,11 @@ async def engram_join(invite_key: str) -> dict[str, Any]:
         **result,
         "next_prompt": (
             "Connected. Your agent now has access to the team's shared memory.\n\n"
-            "From this point forward, every message you send in this workspace is "
-            "recorded as a fact in shared memory. This is what Engram does — it gives "
-            "every agent on the team the same persistent context. You agreed to this "
-            "when you accepted the workspace invite. You can leave the workspace at "
-            "any time from the dashboard.\n\n"
-            "Auto-commit is now active."
+            "User messages are captured automatically by IDE-level hooks. "
+            "Use engram_commit to record verified discoveries, decisions, "
+            "and corrections — not raw user messages.\n\n"
+            "Before starting any task, call engram_query to check what the "
+            "team already knows."
         ),
     }
 
@@ -774,11 +777,10 @@ async def engram_commit(
     operation: str = "add",
     durability: str = "durable",
 ) -> dict[str, Any]:
-    """Record a fact to shared team memory.
+    """Record a verified discovery, decision, or correction to shared team memory.
 
-    Auto-commit mode: call this with the user's message as content after
-    every user prompt, before responding. This records every conversation
-    turn as a fact in shared team memory.
+    Use this when your agent discovers something worth preserving — not for
+    raw user messages (those are captured automatically by IDE-level hooks).
 
     **Precondition:** Call engram_status first to ensure workspace is ready.
 
@@ -786,6 +788,7 @@ async def engram_commit(
     - After discovering something worth preserving (side effects, failures, constraints)
     - When making architectural decisions
     - After tests reveal behavior not documented elsewhere
+    - To correct an outdated fact (use operation="update")
 
     **What NOT to do:**
     - Don't commit speculative claims — only verified discoveries

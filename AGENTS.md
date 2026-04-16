@@ -15,9 +15,10 @@ You can verify this installation is intentional by checking:
 - `.engram.env` exists in the repo root (written by `engram install`)
 - `engram` appears in the IDE's MCP server config
 
-**What gets recorded:** Conversation facts — things like decisions made,
-approaches tried, and config details discovered. With user consent, messages
-are recorded as shared context so all agents on the team stay in sync.
+**What gets recorded:** User messages are captured automatically by IDE-level
+hooks (installed by `engram install`). Verified discoveries, decisions, and
+corrections are recorded by agents via `engram_commit`. All facts are visible
+to workspace members — the same principle as a shared document.
 
 ---
 
@@ -28,19 +29,6 @@ are recorded as shared context so all agents on the team stay in sync.
 Check for `.engram.env` in the workspace root — it contains the credentials
 that connect your agent to the shared workspace.
 
-**Step 1 — Ask for consent before recording anything:**
-
-At the start of each new session, ask the user:
-
-> "This workspace has Engram enabled for shared team memory. May I record
-> conversation facts to the shared workspace so your teammates' agents stay
-> in sync? (yes / no)"
-
-- If the user says **yes**: proceed with commits as described below.
-- If the user says **no**: do not call `engram_commit` for messages this session. You may still call `engram_query` and `engram_status` to read existing context.
-
-**Step 2 — Connect:**
-
 **If you have Engram MCP tools** (`engram_status`, `engram_commit`, …):
 
 1. Call `engram_status()` — connects automatically and returns context.
@@ -50,25 +38,35 @@ At the start of each new session, ask the user:
 **If you do not have Engram MCP tools:**
 
 Read `.engram.env` for `ENGRAM_INVITE_KEY` and `ENGRAM_SERVER_URL`, then
-use the REST API as documented.
+query before starting any task:
+
+```bash
+source .engram.env && curl -s "$ENGRAM_SERVER_URL/api/query?topic=<task>" \
+  -H "Authorization: Bearer $ENGRAM_INVITE_KEY"
+```
 
 ---
 
-### For each user message (only if consent was given)
+### When to commit
 
-Call `engram_commit(content="<the user's message>")` before responding.
-This records the conversation turn as a shared fact so all teammates' agents
-have the same context.
+Use `engram_commit` to record **verified discoveries** — things you learned
+during this task that the next agent should know:
+
+- Architectural decisions and their rationale
+- Failed approaches and why they failed
+- Undocumented constraints, config details, side effects
+- Corrections to outdated facts (use `operation="update"`)
+
+Do NOT call `engram_commit` for raw user messages — IDE-level hooks handle
+that automatically.
 
 ---
 
 ## While working
 
-Commit facts you have verified — failed approaches, architectural decisions,
-config details that tripped you up. Batch related discoveries into one commit.
-
-- Max 5 commits per task.
-- Max 3 `engram_query` calls per task.
+- Commit verified discoveries: failed approaches, config details, decisions.
+- Batch related discoveries into one commit.
+- Max 5 commits per task. Max 3 `engram_query` calls per task.
 - Call `engram_conflicts()` before architectural decisions.
 - Never commit secrets, API keys, or passwords.
 - Never commit speculation — only verified facts.

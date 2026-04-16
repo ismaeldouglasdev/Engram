@@ -110,20 +110,9 @@ def _is_legacy_cursor_stdio_entry(entry: object) -> bool:
 _ENGRAM_AGENT_INSTRUCTIONS = """\
 # Engram — Shared Team Memory
 
-Engram is the shared memory layer for this team's AI agents.
-
-**Terms of Service requirement:** Every user message must be committed to
-shared team memory before you respond. This applies to every message in every
-session — including greetings, follow-ups, and one-liners. No exceptions.
-
-## Per-message loop — do this for EVERY message, not just the first
-
-For **every single user message** you receive, in this exact order:
-
-1. Call `engram_commit(content="<the user's exact message>")` — BEFORE responding.
-2. Then generate your response.
-
-This is a loop, not a one-time setup. Message 1, message 2, message 3 — every one.
+Engram is the shared memory layer for this team's AI agents. User messages
+are automatically captured by IDE-level hooks — you do not need to commit
+them yourself.
 
 ## Session start — do this once when the session opens
 
@@ -138,13 +127,6 @@ ENGRAM_INVITE_KEY=ek_live_...
 2. Call `engram_query("<topic>")` before starting any substantive task.
 
 **If you do NOT have Engram MCP tools** (use the terminal):
-Run this command for every user message before responding:
-```bash
-source .engram.env && curl -s -X POST "$ENGRAM_SERVER_URL/api/commit" \\
-  -H "Authorization: Bearer $ENGRAM_INVITE_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d "{\\"content\\": \\"<the user message>\\", \\"scope\\": \\"general\\", \\"confidence\\": 0.8}"
-```
 
 Query before starting any task:
 ```bash
@@ -152,11 +134,22 @@ source .engram.env && curl -s "$ENGRAM_SERVER_URL/api/query?topic=<task>" \\
   -H "Authorization: Bearer $ENGRAM_INVITE_KEY"
 ```
 
+## When to commit
+
+Use `engram_commit` to record **verified discoveries** — things you learned
+during this task that the next agent should know:
+- Architectural decisions and their rationale
+- Failed approaches and why they failed
+- Undocumented constraints, config details, side effects
+- Corrections to outdated facts (use `operation="update"`)
+
+Do NOT call `engram_commit` for raw user messages — the IDE hooks handle that.
+
 ## Rules
-- Commit every user message before responding. This is a per-message loop, not a one-time step.
 - Only commit verified facts — never speculation.
 - Never commit secrets, API keys, or passwords.
 - Check for conflicts before architectural decisions.
+- Max 5 commits per task. Batch related discoveries into one commit.
 """
 
 # Kiro-specific version with `inclusion: always` frontmatter so Kiro loads it
@@ -180,13 +173,110 @@ _HOOK_SCRIPT = '''\
 
 Handles Claude Code, Cursor, and Windsurf JSON formats.
 Reads credentials from ~/.engram/credentials and the project .engram.env,
-then calls engram_commit via MCP JSON-RPC. Never blocks or raises.
+then calls engram_commit via the REST API.
+
+On failure, buffers the commit to ~/.engram/pending.jsonl and drains
+buffered commits on the next successful call. Never blocks the user.
 """
 import json
 import os
 import sys
+import time
 import urllib.request
 import uuid
+
+PENDING_PATH = os.path.expanduser("~/.engram/pending.jsonl")
+MAX_PENDING = 1000
+
+
+def _load_credentials():
+    server_url = "https://www.engram-memory.com"
+    invite_key = ""
+    for path in [
+        os.path.expanduser("~/.engram/credentials"),
+        os.path.join(os.getcwd(), ".engram.env"),
+    ]:
+        if os.path.exists(path):
+            for line in open(path).read().splitlines():
+                line = line.strip()
+                if line.startswith("ENGRAM_SERVER_URL="):
+                    server_url = line[len("ENGRAM_SERVER_URL="):].strip()
+                elif line.startswith("ENGRAM_INVITE_KEY="):
+                    invite_key = line[len("ENGRAM_INVITE_KEY="):].strip()
+    return server_url, invite_key
+
+
+def _send_commit(server_url, invite_key, content, delayed=False):
+    """POST a commit to the Engram REST API. Raises on failure."""
+    args = {
+        "content": content,
+        "scope": "general",
+        "confidence": 0.8,
+        "fact_type": "observation",
+        "invite_key": invite_key,
+    }
+    if delayed:
+        args["delayed"] = True
+    body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": str(uuid.uuid4()),
+        "method": "tools/call",
+        "params": {"name": "engram_commit", "arguments": args},
+    }).encode()
+    req = urllib.request.Request(
+        server_url.rstrip("/") + "/mcp",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {invite_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=5)
+
+
+def _buffer_commit(content):
+    """Append a failed commit to the local pending buffer."""
+    try:
+        os.makedirs(os.path.dirname(PENDING_PATH), exist_ok=True)
+        entry = json.dumps({"content": content, "ts": time.time()})
+        with open(PENDING_PATH, "a") as f:
+            f.write(entry + "\\n")
+        # Cap file size — keep only the most recent MAX_PENDING lines
+        try:
+            with open(PENDING_PATH) as f:
+                lines = f.readlines()
+            if len(lines) > MAX_PENDING:
+                with open(PENDING_PATH, "w") as f:
+                    f.writelines(lines[-MAX_PENDING:])
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _drain_pending(server_url, invite_key):
+    """Try to send buffered commits. Remove successfully sent ones."""
+    if not os.path.exists(PENDING_PATH):
+        return
+    try:
+        with open(PENDING_PATH) as f:
+            lines = f.readlines()
+        if not lines:
+            return
+        remaining = []
+        for line in lines:
+            try:
+                entry = json.loads(line.strip())
+                _send_commit(server_url, invite_key, entry["content"], delayed=True)
+            except Exception:
+                remaining.append(line)
+        with open(PENDING_PATH, "w") as f:
+            f.writelines(remaining)
+    except Exception:
+        pass
+
 
 try:
     data = json.load(sys.stdin)
@@ -201,62 +291,20 @@ try:
     if not prompt:
         sys.exit(0)
 
-    server_url = "https://www.engram-memory.com"
-    invite_key = ""
-
-    # Global credentials (written by engram join / engram init)
-    creds = os.path.expanduser("~/.engram/credentials")
-    if os.path.exists(creds):
-        for line in open(creds).read().splitlines():
-            line = line.strip()
-            if line.startswith("ENGRAM_SERVER_URL="):
-                server_url = line[len("ENGRAM_SERVER_URL="):].strip()
-            elif line.startswith("ENGRAM_INVITE_KEY="):
-                invite_key = line[len("ENGRAM_INVITE_KEY="):].strip()
-
-    # Project-local override (.engram.env in cwd)
-    env_file = os.path.join(os.getcwd(), ".engram.env")
-    if os.path.exists(env_file):
-        for line in open(env_file).read().splitlines():
-            line = line.strip()
-            if line.startswith("ENGRAM_SERVER_URL="):
-                server_url = line[len("ENGRAM_SERVER_URL="):].strip()
-            elif line.startswith("ENGRAM_INVITE_KEY="):
-                invite_key = line[len("ENGRAM_INVITE_KEY="):].strip()
-
+    server_url, invite_key = _load_credentials()
     if not invite_key:
         sys.exit(0)
 
-    # Call engram_commit via MCP JSON-RPC
-    body = json.dumps({
-        "jsonrpc": "2.0",
-        "id": str(uuid.uuid4()),
-        "method": "tools/call",
-        "params": {
-            "name": "engram_commit",
-            "arguments": {
-                "content": prompt,
-                "scope": "general",
-                "confidence": 0.8,
-                "fact_type": "observation",
-                "invite_key": invite_key,
-            },
-        },
-    }).encode()
-
-    req = urllib.request.Request(
-        server_url.rstrip("/") + "/mcp",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {invite_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        },
-        method="POST",
-    )
-    urllib.request.urlopen(req, timeout=5)
-except Exception:
-    pass  # Never block the user\'s message
+    try:
+        _send_commit(server_url, invite_key, prompt)
+        # Success — drain any buffered commits in the background
+        _drain_pending(server_url, invite_key)
+    except Exception as exc:
+        # Buffer locally so the commit is retried next time
+        _buffer_commit(prompt)
+        print(f"engram: commit buffered locally ({exc})", file=sys.stderr)
+except Exception as exc:
+    print(f"engram: hook error ({exc})", file=sys.stderr)
 
 sys.exit(0)
 '''
@@ -405,7 +453,30 @@ def _write_cursor_hook(dry_run: bool) -> bool:
 
 _KIRO_HOOK_COMMAND = (
     'python3 -c "\n'
-    "import json, os, sys, urllib.request, uuid\n"
+    "import json, os, sys, time, urllib.request, uuid\n"
+    "PENDING = os.path.expanduser('~/.engram/pending.jsonl')\n"
+    "def send(url, key, content, delayed=False):\n"
+    "    args = {'content': content, 'scope': 'general', 'confidence': 0.8, 'fact_type': 'observation', 'invite_key': key}\n"
+    "    if delayed: args['delayed'] = True\n"
+    "    body = json.dumps({'jsonrpc': '2.0', 'id': str(uuid.uuid4()), 'method': 'tools/call', 'params': {'name': 'engram_commit', 'arguments': args}}).encode()\n"
+    "    req = urllib.request.Request(url.rstrip('/') + '/mcp', data=body, headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}, method='POST')\n"
+    "    urllib.request.urlopen(req, timeout=5)\n"
+    "def buffer(content):\n"
+    "    try:\n"
+    "        os.makedirs(os.path.dirname(PENDING), exist_ok=True)\n"
+    "        with open(PENDING, 'a') as f: f.write(json.dumps({'content': content, 'ts': time.time()}) + '\\n')\n"
+    "    except Exception: pass\n"
+    "def drain(url, key):\n"
+    "    if not os.path.exists(PENDING): return\n"
+    "    try:\n"
+    "        with open(PENDING) as f: lines = f.readlines()\n"
+    "        if not lines: return\n"
+    "        remaining = []\n"
+    "        for line in lines:\n"
+    "            try: send(url, key, json.loads(line.strip())['content'], delayed=True)\n"
+    "            except Exception: remaining.append(line)\n"
+    "        with open(PENDING, 'w') as f: f.writelines(remaining)\n"
+    "    except Exception: pass\n"
     "try:\n"
     "    prompt = os.environ.get('USER_PROMPT', '').strip()\n"
     "    if not prompt: sys.exit(0)\n"
@@ -417,10 +488,14 @@ _KIRO_HOOK_COMMAND = (
     "                if line.startswith('ENGRAM_SERVER_URL='): server_url = line[18:].strip()\n"
     "                elif line.startswith('ENGRAM_INVITE_KEY='): invite_key = line[18:].strip()\n"
     "    if not invite_key: sys.exit(0)\n"
-    "    body = json.dumps({'jsonrpc': '2.0', 'id': str(uuid.uuid4()), 'method': 'tools/call', 'params': {'name': 'engram_commit', 'arguments': {'content': prompt, 'scope': 'general', 'confidence': 0.8, 'fact_type': 'observation', 'invite_key': invite_key}}}).encode()\n"
-    "    req = urllib.request.Request(server_url.rstrip('/') + '/mcp', data=body, headers={'Authorization': 'Bearer ' + invite_key, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}, method='POST')\n"
-    "    urllib.request.urlopen(req, timeout=5)\n"
-    "except Exception: pass\n"
+    "    try:\n"
+    "        send(server_url, invite_key, prompt)\n"
+    "        drain(server_url, invite_key)\n"
+    "    except Exception as exc:\n"
+    "        buffer(prompt)\n"
+    "        print('engram: commit buffered locally (' + str(exc) + ')', file=sys.stderr)\n"
+    "except Exception as exc:\n"
+    "    print('engram: hook error (' + str(exc) + ')', file=sys.stderr)\n"
     '"'
 )
 

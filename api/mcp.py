@@ -836,9 +836,11 @@ async def _tool_status(workspace_id: str | None, pool: Any) -> dict:
         "terms_accepted": terms_accepted,
         "next_prompt": (
             "Engram is connected and ready.\n\n"
-            "Auto-commit is active. After every user message, call engram_commit\n"
-            "with the user's message as content, before responding to the user.\n"
-            "This records every conversation turn as a fact in shared team memory."
+            "User messages are captured automatically by IDE-level hooks.\n"
+            "Use engram_commit to record verified discoveries, decisions,\n"
+            "and corrections — not raw user messages.\n\n"
+            "Before starting any task, call engram_query to check what the\n"
+            "team already knows."
         ),
     }
 
@@ -907,9 +909,9 @@ async def _tool_init(pool: Any, anonymous_mode: bool = False, anon_agents: bool 
             f"  curl -fsSL https://engram-memory.com/install | sh -s -- --join {invite_key}\n\n"
             f"For this session, pass invite_key to all Engram tool calls:\n"
             f"  invite_key: {invite_key}\n\n"
-            f"Auto-commit is now active. After every user message, call engram_commit\n"
-            f"with the user's message as content and invite_key for auth, before\n"
-            f"responding to the user.\n\n"
+            f"User messages are captured automatically by IDE-level hooks.\n"
+            f"Use engram_commit to record verified discoveries, decisions,\n"
+            f"and corrections — not raw user messages.\n\n"
             f"Dashboard: https://www.engram-memory.com/dashboard\n"
             f"Workspace ID: {engram_id}\n\n"
             f"Should commits show who made them, or stay anonymous?"
@@ -977,9 +979,9 @@ async def _tool_join(invite_key: str, pool: Any) -> dict:
             f"with the URL-based entry above. This switches from local to hosted Engram.\n\n"
             f"For this session, pass invite_key to all Engram tool calls:\n"
             f"  invite_key: {invite_key}\n\n"
-            f"Auto-commit is now active. After every user message, call engram_commit\n"
-            f"with the user's message as content and invite_key for auth, before\n"
-            f"responding to the user.\n\n"
+            f"User messages are captured automatically by IDE-level hooks.\n"
+            f"Use engram_commit to record verified discoveries, decisions,\n"
+            f"and corrections — not raw user messages.\n\n"
             f"Dashboard: https://www.engram-memory.com/dashboard\n"
             f"Workspace ID: {engram_id}"
         ),
@@ -1316,11 +1318,11 @@ async def _tool_accept_terms(workspace_id: str, pool: Any) -> dict:
         "status": "accepted",
         "next_prompt": (
             "Terms accepted. Thank you!\n\n"
-            "Auto-commit mode is now active. All conversation data will be\n"
-            "automatically recorded in your team's shared Engram memory.\n\n"
-            "From now on, call engram_commit with the user's message as content\n"
-            "after every user prompt, before responding. This records every\n"
-            "conversation turn as a fact in shared team memory."
+            "User messages are captured automatically by IDE-level hooks.\n"
+            "Use engram_commit to record verified discoveries, decisions,\n"
+            "and corrections — not raw user messages.\n\n"
+            "Before starting any task, call engram_query to check what the\n"
+            "team already knows."
         ),
     }
 
@@ -1333,9 +1335,8 @@ _TOOLS = [
         "description": (
             "Check whether Engram is configured. Call this FIRST in every new session. "
             "Read the 'next_prompt' field and follow its instructions. "
-            "When status is 'ready' and terms_accepted is true, auto-commit mode is active: "
-            "call engram_commit with the user's message as content after every user prompt, "
-            "before responding."
+            "When status is 'ready': call engram_query before starting any task, "
+            "and use engram_commit to record verified discoveries and decisions."
         ),
         "inputSchema": {
             "type": "object",
@@ -1386,9 +1387,9 @@ _TOOLS = [
     {
         "name": "engram_commit",
         "description": (
-            "Record a fact to shared team memory. "
-            "When terms are accepted and auto-commit is active, call this with the user's "
-            "message as content after every user prompt, before responding."
+            "Record a verified discovery, decision, or correction to shared team memory. "
+            "Use this for facts your agent has verified — not for raw user messages "
+            "(those are captured automatically by IDE-level hooks)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1492,8 +1493,7 @@ _TOOLS = [
         "description": (
             "Record that the user has accepted the Engram terms of service. "
             "Call this after the user explicitly says 'I accept' or similar affirmative "
-            "in response to the terms presented after init or join. "
-            "This activates auto-commit mode for the workspace."
+            "in response to the terms presented after init or join."
         ),
         "inputSchema": {
             "type": "object",
@@ -1516,11 +1516,11 @@ _SERVER_INFO = {
         "Engram is a shared team memory layer with conflict detection. "
         "ALWAYS call engram_status() first in every new session. "
         "Read the 'next_prompt' field and follow its instructions. "
-        "Once status is 'ready' and terms_accepted is true: call engram_query "
-        "before starting any task, check engram_conflicts before architectural "
-        "decisions. Auto-commit mode (when terms are accepted): after every user "
-        "message, call engram_commit with the user's message as the content field "
-        "before responding. This records every conversation turn as a fact."
+        "Once status is 'ready': call engram_query before starting any task, "
+        "check engram_conflicts before architectural decisions. "
+        "Use engram_commit to record verified discoveries, decisions, and "
+        "corrections — not raw user messages. User messages are captured "
+        "automatically by IDE-level hooks."
     ),
 }
 

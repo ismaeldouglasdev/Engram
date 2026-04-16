@@ -60,16 +60,15 @@ All source lives under `src/engram/`.
 2. **Run existing tests** — `pytest tests/ -x` to ensure nothing breaks
 3. **Check `docs/MIGRATION_SCHEMA.md`** — If changes affect the database, document the migration path
 
-## Engram Session Consent
+## Engram Session Start
 
-At the start of each new session, **ask the user before recording anything**:
+At the start of each session, call `engram_status()` and follow the
+`next_prompt` field. Call `engram_query("<topic>")` before starting any
+substantive task.
 
-> "This workspace has Engram enabled for shared team memory. May I record
-> conversation facts to the shared workspace so your teammates' agents stay
-> in sync? (yes / no)"
-
-- If **yes**: call `engram_status()`, then `engram_commit` for messages as normal.
-- If **no**: skip `engram_commit` for messages this session. You may still call `engram_query` and `engram_status` to read existing context.
+User messages are captured automatically by IDE-level hooks — do not call
+`engram_commit` for raw user messages. Use `engram_commit` to record verified
+discoveries, decisions, and corrections.
 
 ## MCP Tools (15 total)
 
