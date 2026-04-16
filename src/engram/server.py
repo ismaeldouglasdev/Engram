@@ -1571,3 +1571,64 @@ async def engram_replay(
         "as_of": as_of,
         "fact_count": len(results),
     }
+
+
+# ── engram_check_conflicts ───────────────────────────────────────────────────────────
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def engram_check_conflicts(
+    content: str,
+    scope: str | None = None,
+) -> dict[str, Any]:
+    """Check if proposed content conflicts with existing facts.
+
+    Use this as a pre-commit hook - before writing code or making decisions,
+    check if the proposed action contradicts established knowledge. This is
+    the preventative layer that blocks actions based on conflicting facts.
+
+    Parameters:
+    - content: The proposed fact or action to check.
+    - scope: Optional scope to filter checks (e.g., 'backend', 'auth').
+
+    Returns: {has_conflicts, conflicts: [{fact_id, content, explanation, severity}]}
+    If has_conflicts is true, the action should be blocked until resolved.
+    """
+    if _engine is None:
+        return {"error": "Engine not initialized"}
+
+    fact = {
+        "content": content,
+        "scope": scope or "global",
+        "confidence": 0.9,
+        "fact_type": "observation",
+        "agent_id": "pre-commit-hook",
+    }
+
+    await _engine.commit(fact)
+
+    conflicts = await _engine.get_conflicts(scope=fact["scope"], status="open")
+
+    if conflicts:
+        return {
+            "has_conflicts": True,
+            "conflicts": [
+                {
+                    "conflict_id": c.get("id"),
+                    "fact_id": c.get("fact_a_id"),
+                    "explanation": c.get("explanation"),
+                    "severity": c.get("severity"),
+                }
+                for c in conflicts[:5]
+            ],
+            "message": f"Found {len(conflicts)} conflicting facts. Resolve before proceeding.",
+        }
+
+    return {
+        "has_conflicts": False,
+        "conflicts": [],
+        "message": "No conflicts detected. Safe to proceed.",
+    }
+
+
+# End of MCP tools
