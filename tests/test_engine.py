@@ -892,3 +892,22 @@ async def test_query_adjacent_scopes(engine: EngramEngine):
     # In-scope results should have adjacent=False
     in_scope = [r for r in results_adj if r.get("adjacent") is False]
     assert len(in_scope) > 0
+
+
+@pytest.mark.asyncio
+async def test_conflict_check_queued_false_on_queue_overflow(storage):
+    """When the detection queue is full, conflict_check_queued is False and detection_skipped is True."""
+    e = EngramEngine(storage)
+    # Fill detection queue to capacity without starting workers (queue stays full)
+    for _ in range(e._detection_queue.maxsize):
+        e._detection_queue.put_nowait("dummy-id")
+
+    result = await e.commit(
+        content="The cache TTL is 300 seconds",
+        scope="infra",
+        confidence=0.8,
+        agent_id="test-agent",
+    )
+
+    assert result["conflict_check_queued"] is False
+    assert result["detection_skipped"] is True

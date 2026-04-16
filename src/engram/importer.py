@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -172,12 +173,12 @@ async def import_documents(
 ) -> ImportSummary:
     """Import supported documents from *path* into Engram."""
     summary = ImportSummary()
-    files = discover_import_files(path, pattern=pattern)
+    files = await asyncio.to_thread(discover_import_files, path, pattern=pattern)
     summary.files_scanned = len(files)
 
     for file_path in files:
         try:
-            text = read_text_file(file_path)
+            text = await asyncio.to_thread(read_text_file, file_path)
             chunks = chunk_document(text)
             file_facts: list[dict[str, Any]] = []
 

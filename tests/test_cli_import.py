@@ -1,12 +1,14 @@
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import numpy as np
+import pytest
 from click.testing import CliRunner
 
 from engram.cli import main
-from engram.importer import chunk_document, discover_import_files, prepare_import_fact
+from engram.importer import chunk_document, discover_import_files, import_documents, prepare_import_fact
 from engram.storage import SQLiteStorage
 
 
@@ -195,3 +197,42 @@ def test_import_reports_rejected_secret(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert "Skipped         : 1" in result.output
     assert "appears to contain a secret" in result.output
+
+
+@pytest.mark.asyncio
+async def test_import_does_not_block_event_loop(tmp_path, monkeypatch):
+    """File discovery and reads run in threads, so the event loop stays free during imports."""
+    source = tmp_path / "notes.md"
+    source.write_text("The event loop stays responsive during imports.")
+
+    import engram.importer as importer_mod
+
+    original_discover = importer_mod.discover_import_files
+
+    def slow_discover(path, pattern="*"):
+        time.sleep(0.05)  # synchronous pause — would stall the event loop without to_thread
+        return original_discover(path, pattern)
+
+    monkeypatch.setattr("engram.importer.discover_import_files", slow_discover)
+
+    async def fake_extract(chunk, source):
+        return ["The event loop stays responsive."]
+
+    monkeypatch.setattr("engram.importer.extract_atomic_statements", fake_extract)
+
+    class FakeEngine:
+        async def commit_batch(self, facts, scope, agent_id):
+            return [{"success": True, "duplicate": False} for _ in facts]
+
+    ticks: list[int] = []
+
+    async def ticker():
+        for i in range(5):
+            await asyncio.sleep(0)
+            ticks.append(i)
+
+    ticker_task = asyncio.create_task(ticker())
+    await import_documents(FakeEngine(), tmp_path, scope="test")
+    await ticker_task
+
+    assert len(ticks) == 5

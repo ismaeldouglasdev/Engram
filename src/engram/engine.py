@@ -499,9 +499,11 @@ class EngramEngine:
         await self._check_corroboration(fact_id, emb, agent_id, scope)
 
         # Queue durable facts for async conflict detection
+        detection_queued = False
         if durability == "durable":
             try:
                 self._detection_queue.put_nowait(fact_id)
+                detection_queued = True
             except asyncio.QueueFull:
                 logger.warning("Detection queue full, skipping conflict check for %s", fact_id[:12])
 
@@ -510,7 +512,8 @@ class EngramEngine:
             "committed_at": now,
             "duplicate": False,
             "conflicts_detected": False,  # detection is async
-            "conflict_check_queued": durability == "durable",
+            "conflict_check_queued": detection_queued,
+            "detection_skipped": durability == "durable" and not detection_queued,
             "conflict_risk": self._estimate_conflict_risk(content, scope),
             "memory_op": operation,
             "supersedes_fact_id": supersedes_fact_id,
