@@ -795,8 +795,21 @@ def status() -> None:
 
 @main.command()
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON.")
-def stats(output_json: bool) -> None:
-    """Show workspace statistics: fact count, conflicts, agents."""
+@click.option("--detailed", "-d", is_flag=True, help="Show detailed statistics.")
+def stats(output_json: bool, detailed: bool) -> None:
+    """Show workspace statistics: facts, conflicts, agents, usage.
+
+    Provides a comprehensive overview of workspace health including:
+    - Fact counts by type and durability
+    - Open conflicts and resolution rate
+    - Agent activity summary
+    - Storage usage
+
+    Examples:
+        engram stats                # Quick summary
+        engram stats --detailed    # Full breakdown
+        engram stats --json       # Machine-readable
+    """
     import os
     import urllib.request
     import urllib.error
@@ -817,31 +830,63 @@ def stats(output_json: bool) -> None:
     base_url = mcp_url.replace("/mcp", "") if "/mcp" in mcp_url else mcp_url
 
     try:
-        # Use /api/conflicts to get conflict count
-        url = f"{base_url}/api/conflicts?status=open&limit=1"
+        url = f"{base_url}/api/stats"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
 
             if output_json:
-                click.echo(
-                    json.dumps(
-                        {"workspace_id": ws.engram_id, "conflicts": data.get("conflicts", [])},
-                        indent=2,
-                    )
-                )
+                click.echo(json.dumps(data, indent=2))
             else:
-                conflicts = data.get("conflicts", [])
-                click.echo("=== Workspace Stats ===")
+                stats_data = data.get("stats", {})
+                click.echo("=== Workspace Statistics ===")
                 click.echo(f"Workspace: {ws.engram_id}")
+                if ws.display_name:
+                    click.echo(f"Display: {ws.display_name}")
                 click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
-                click.echo(f"Open Conflicts: {len(conflicts)}")
+                click.echo("")
+
+                facts = stats_data.get("facts", {})
+                click.echo("📚 Facts:")
+                click.echo(f"  Total: {facts.get('total', 0)}")
+                if detailed:
+                    click.echo(f"  Observations: {facts.get('by_type', {}).get('observation', 0)}")
+                    click.echo(f"  Decisions: {facts.get('by_type', {}).get('decision', 0)}")
+                    click.echo(f"  Inferences: {facts.get('by_type', {}).get('inference', 0)}")
+                    durable = facts.get("by_durability", {}).get("durable", 0)
+                    ephemeral = facts.get("by_durability", {}).get("ephemeral", 0)
+                    click.echo(f"  Durable: {durable}")
+                    click.echo(f"  Ephemeral: {ephemeral}")
+
+                conflicts = stats_data.get("conflicts", {})
+                click.echo("")
+                click.echo("⚡ Conflicts:")
+                click.echo(f"  Open: {conflicts.get('open', 0)}")
+                if detailed:
+                    click.echo(f"  Resolved: {conflicts.get('resolved', 0)}")
+                    click.echo(f"  Auto-resolved: {conflicts.get('auto_resolved', 0)}")
+
+                agents = stats_data.get("agents", {})
+                click.echo("")
+                click.echo("🤖 Agents:")
+                click.echo(f"  Total: {agents.get('total', 0)}")
+
+                if detailed:
+                    activity = stats_data.get("activity", {})
+                    if activity:
+                        click.echo("")
+                        click.echo("📈 Activity (last 7 days):")
+                        commits = activity.get("commits", 0)
+                        queries = activity.get("queries", 0)
+                        click.echo(f"  Commits: {commits}")
+                        click.echo(f"  Queries: {queries}")
+
     except urllib.error.HTTPError:
-        # Fallback - just show workspace info
         click.echo("=== Workspace Stats ===")
         click.echo(f"Workspace: {ws.engram_id}")
         click.echo(f"Mode: {'Team' if ws.db_url else 'Local'}")
-        click.echo("(Run engram serve --http to see full stats)")
+        click.echo("")
+        click.echo("⚠ Could not fetch full stats. Run 'engram serve --http' to enable.")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
 
