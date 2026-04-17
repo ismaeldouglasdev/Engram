@@ -419,9 +419,17 @@ def _render_landing() -> str:
     except ImportError:
         pass
 
-    return """<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
+
+return """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8">
 <meta http-equiv="refresh" content="0;url=/dashboard">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#16a34a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Engram">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌿</text></svg>">
 <title>Engram</title></head>
 <body style="background:#f0f9f0;color:#2d3b2d;font-family:sans-serif;display:flex;
 align-items:center;justify-content:center;min-height:100vh;">
@@ -441,6 +449,16 @@ _DASH_STYLE = """
     background: #f0f9f0; color: #2d3b2d; line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     position: relative; min-height: 100vh;
+  }
+  @media (max-width: 640px) {
+    body { padding: 0.75rem; }
+    .dash-header { flex-direction: column; gap: 0.5rem; }
+    .dash-title h1 { font-size: 1.25rem; }
+    nav { flex-wrap: wrap; gap: 0.5rem; }
+    nav a { padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+    .card { padding: 1rem; }
+    input, select, textarea { font-size: 16px; }
   }
   /* Decorative leaves */
   body::before {
@@ -644,11 +662,16 @@ def _dash_layout(
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+  <meta name="theme-color" content="#16a34a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Engram">
   <title>{title} — Engram Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌿</text></svg>">
   {_HTMX_SCRIPT}
   {theme_script}
   {_DASH_STYLE}
