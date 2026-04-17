@@ -2701,6 +2701,92 @@ def completion(shell: str | None) -> None:
     click.echo(f"Restart your shell or run: source {config_path}")
 
 
+@main.command("doctor")
+def doctor() -> None:
+    """Run diagnostic checks on Engram installation."""
+    import os
+    import urllib.request
+
+    click.echo("🔍 Running Engram diagnostics...\n")
+
+    all_passed = True
+
+    # Check 1: Environment variables
+    click.echo("[1] Checking environment variables...")
+    mcp_url = os.environ.get("ENGRAM_MCP_URL")
+    invite_key = os.environ.get("ENGRAM_INVITE_KEY")
+    server_url = os.environ.get("ENGRAM_SERVER_URL")
+
+    if mcp_url:
+        click.echo(f"  ✓ ENGRAM_MCP_URL = {mcp_url}")
+    else:
+        click.echo(f"  ✗ ENGRAM_MCP_URL not set")
+        all_passed = False
+
+    if invite_key:
+        click.echo(f"  ✓ ENGRAM_INVITE_KEY is set")
+    else:
+        click.echo(f"  ✗ ENGRAM_INVITE_KEY not set")
+        all_passed = False
+
+    if server_url:
+        click.echo(f"  ✓ ENGRAM_SERVER_URL = {server_url}")
+    else:
+        click.echo(f"  ✗ ENGRAM_SERVER_URL not set")
+        all_passed = False
+
+    # Check 2: .engram.env file
+    click.echo("\n[2] Checking .engram.env file...")
+    env_path = Path(".engram.env")
+    if env_path.exists():
+        click.echo(f"  ✓ .engram.env exists")
+    else:
+        click.echo(f"  ✗ .engram.env not found in current directory")
+        all_passed = False
+
+    # Check 3: MCP config
+    click.echo("\n[3] Checking MCP configuration...")
+    for client_name, info in _MCP_CLIENTS.items():
+        config_path: Path = info["path"]
+        if config_path.exists() and config_path != Path("ValidPathNotFound"):
+            if "engram" in config_path.read_text():
+                click.echo(f"  ✓ {client_name}: Engram configured")
+            else:
+                click.echo(f"  ⚠ {client_name}: Config exists but Engram not found")
+        else:
+            click.echo(f"  - {client_name}: No config found")
+
+    # Check 4: Connectivity
+    click.echo("\n[4] Checking server connectivity...")
+    if server_url:
+        try:
+            req = urllib.request.Request(
+                f"{server_url}/api/health",
+                headers={"Authorization": f"Bearer {invite_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    click.echo(f"  ✓ Server is reachable")
+                else:
+                    click.echo(f"  ✗ Server returned status {resp.status}")
+                    all_passed = False
+        except Exception as e:
+            click.echo(f"  ✗ Cannot reach server: {e}")
+            all_passed = False
+    else:
+        click.echo(f"  ✗ Cannot check - ENGRAM_SERVER_URL not set")
+        all_passed = False
+
+    # Summary
+    click.echo("\n" + "=" * 40)
+    if all_passed:
+        click.echo("✅ All checks passed!")
+    else:
+        click.echo("❌ Some checks failed - run engram install to fix")
+
+    click.echo("\nTip: Run 'engram install' to set up Engram in your IDE")
+
+
 @main.command("export")
 @click.option(
     "--format", type=click.Choice(["json", "markdown"]), default="json", help="Export format."
