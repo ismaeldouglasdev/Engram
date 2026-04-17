@@ -2194,13 +2194,19 @@ class EngramEngine:
         )
 
     def _get_nli_model(self) -> Any:
-        """Lazy-load the NLI cross-encoder model."""
+        """Lazy-load the NLI cross-encoder model.
+
+        Model can be customized via ENGRAM_NLI_MODEL env var.
+        For code-domain fine-tuning, set: ENGRAM_NLI_MODEL=cross-encoder/my-model
+        """
         if self._nli_model is None:
             try:
                 from sentence_transformers import CrossEncoder
+                import os
 
-                self._nli_model = CrossEncoder("cross-encoder/nli-MiniLM2-L6-H768")
-                logger.info("NLI model loaded: cross-encoder/nli-MiniLM2-L6-H768")
+                model_name = os.environ.get("ENGRAM_NLI_MODEL", "cross-encoder/nli-MiniLM2-L6-H768")
+                self._nli_model = CrossEncoder(model_name)
+                logger.info("NLI model loaded: %s", model_name)
             except Exception:
                 logger.warning("NLI model not available. Tier 1 detection disabled.")
                 return None

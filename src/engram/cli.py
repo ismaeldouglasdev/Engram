@@ -2012,6 +2012,8 @@ def info() -> None:
 
 _QUICKSTART_URL = "https://github.com/Agentscreator/Engram/blob/main/docs/quickstart/README.md"
 _TROUBLESHOOTING_URL = "https://github.com/Agentscreator/Engram/blob/main/docs/TROUBLESHOOTING.md"
+# NLI cross-encoder model name - can be overridden via ENGRAM_NLI_MODEL env var
+# For fine-tuned code-domain models, set: ENGRAM_NLI_MODEL=cross-encoder/my-fine-tuned-model
 _NLI_MODEL_NAME = "cross-encoder/nli-MiniLM2-L6-H768"
 
 
