@@ -26,6 +26,13 @@ uv tool install engram-team --upgrade --quiet >nul 2>&1
 if %errorlevel% equ 0 (
     set "PATH=%USERPROFILE%\.local\bin;%PATH%"
     echo   + engram CLI installed
+
+    if not exist "%USERPROFILE%\.engram" mkdir "%USERPROFILE%\.engram"
+    echo ENGRAM_SERVER_URL=https://www.engram-memory.com> "%USERPROFILE%\.engram\credentials"
+    if not "%INVITE_KEY%"=="" echo ENGRAM_INVITE_KEY=%INVITE_KEY%>> "%USERPROFILE%\.engram\credentials"
+
+    engram install >nul 2>&1
+    if %errorlevel% equ 0 ( echo   + auto-commit hooks installed )
 ) else (
     echo   ! CLI install failed -- run manually: uv tool install engram-team
 )

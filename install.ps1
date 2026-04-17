@@ -72,6 +72,16 @@ try {
         $env:PATH = "$uvBin;$env:PATH"
     }
     Write-Host "  ✓ engram CLI installed"
+
+    # Write credentials so the auto-commit hook can reach the server
+    $credDir = "$env:USERPROFILE\.engram"
+    if (-not (Test-Path $credDir)) { New-Item -ItemType Directory -Force -Path $credDir | Out-Null }
+    $credContent = "ENGRAM_SERVER_URL=https://www.engram-memory.com`n"
+    if ($InviteKey) { $credContent += "ENGRAM_INVITE_KEY=$InviteKey`n" }
+    [System.IO.File]::WriteAllText("$credDir\credentials", $credContent)
+
+    # Wire up auto-commit hooks for all detected IDEs
+    try { engram install 2>$null; Write-Host "  ✓ auto-commit hooks installed" } catch {}
 } catch {
     Write-Host "  ! CLI install failed — run manually: uv tool install engram-team"
 }

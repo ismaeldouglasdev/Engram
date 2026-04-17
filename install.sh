@@ -39,6 +39,17 @@ fi
 if uv tool install "engram-team" --upgrade --quiet 2>/dev/null; then
   export PATH="$HOME/.local/bin:$PATH"
   echo "  ✓ engram CLI installed"
+
+  # Write credentials so the auto-commit hook can reach the server
+  mkdir -p "$HOME/.engram"
+  printf "ENGRAM_SERVER_URL=https://www.engram-memory.com\n" > "$HOME/.engram/credentials"
+  if [ -n "$INVITE_KEY" ]; then
+    printf "ENGRAM_INVITE_KEY=%s\n" "$INVITE_KEY" >> "$HOME/.engram/credentials"
+  fi
+  chmod 600 "$HOME/.engram/credentials"
+
+  # Wire up auto-commit hooks for all detected IDEs
+  engram install 2>/dev/null && echo "  ✓ auto-commit hooks installed" || true
 else
   echo "  ! CLI install failed — run manually: uv tool install engram-team"
 fi
