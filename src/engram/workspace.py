@@ -26,7 +26,7 @@ WORKSPACE_PATH = Path.home() / ".engram" / "workspace.json"
 @dataclass
 class WorkspaceConfig:
     engram_id: str
-    db_url: str
+    db_url: str = ""
     schema: str = "engram"
     anonymous_mode: bool = False
     anon_agents: bool = False
@@ -69,6 +69,12 @@ def write_workspace(config: WorkspaceConfig) -> None:
     WORKSPACE_PATH.parent.mkdir(parents=True, exist_ok=True)
     WORKSPACE_PATH.write_text(json.dumps(asdict(config), indent=2))
     WORKSPACE_PATH.chmod(0o600)
+
+
+def clear_workspace_config() -> None:
+    """Remove the local workspace config file, effectively de-linking from the workspace."""
+    if WORKSPACE_PATH.exists():
+        WORKSPACE_PATH.unlink()
 
 
 EDITABLE_CONFIG_KEYS = {"anonymous_mode", "anon_agents", "display_name", "description"}
@@ -260,6 +266,9 @@ def decode_invite_key(invite_key: str) -> dict[str, Any]:
 
     Returns payload dict: {db_url, engram_id, schema, expires_at, uses_remaining, created_at}
     """
+    invite_key = "".join(
+        invite_key.split()
+    )  # strip all whitespace (handles copy-paste line breaks)
     if not invite_key.startswith("ek_live_"):
         raise ValueError("Invalid invite key format (must start with ek_live_)")
 
@@ -312,6 +321,9 @@ def invite_key_hash(invite_key: str) -> str:
 
     Extracts enc_key from the token and returns SHA256(enc_key) as hex.
     """
+    invite_key = "".join(
+        invite_key.split()
+    )  # strip all whitespace (handles copy-paste line breaks)
     if not invite_key.startswith("ek_live_"):
         raise ValueError("Invalid invite key format")
     b64 = invite_key[8:]
