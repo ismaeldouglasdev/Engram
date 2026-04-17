@@ -129,6 +129,7 @@ Agents without MCP support connect via the REST API using the credentials in `.e
 Framework integrations:
 
 - [LangChain / LangGraph](./docs/integrations/langchain.md)
+- [OpenAI Agents SDK](./docs/integrations/openai-agents.md)
 
 ---
 
