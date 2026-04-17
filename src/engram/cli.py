@@ -600,13 +600,63 @@ def _write_steering(client_name: str, dry_run: bool) -> list[str]:
     return written
 
 
+def _install_pre_commit_hook(dry_run: bool) -> list[str]:
+    """Install pre-commit hook that checks for conflicts with Engram memory."""
+    import shutil
+
+    written = []
+    hook_path = Path(".git/hooks/pre-commit")
+    hook_content = """#!/bin/sh
+# Engram pre-commit conflict check
+# Run 'engram install --pre-commit' to update this hook
+
+# Check if engram is available
+if ! command -v engram >/dev/null 2>&1; then
+    # Try local installation
+    ENGRAM_CLI="$(dirname "$(dirname "$(readlink -f "$0")")/src/engram/cli.py"
+    if [ -f "$ENGRAM_CLI" ]; then
+        python "$ENGRAM_CLI" commit-check --staged --threshold 0.35 --strict
+    fi
+else
+    engram commit-check --staged --threshold 0.35 --strict
+fi
+"""
+
+    if not hook_path.parent.exists():
+        click.echo(".git/hooks/ not found - run this in a git repository.")
+        return written
+
+    try:
+        if hook_path.exists():
+            existing = hook_path.read_text()
+            if "engram" in existing:
+                click.echo("Pre-commit hook already installed.")
+                return written
+
+        if not dry_run:
+            hook_path.parent.mkdir(parents=True, exist_ok=True)
+            hook_path.write_text(hook_content)
+            hook_path.chmod(0o755)
+        written.append(str(hook_path))
+        click.echo(f"{'[dry-run] ' if dry_run else ''}Installed pre-commit hook: {hook_path}")
+    except Exception as e:
+        click.echo(f"Error installing hook: {e}")
+
+    return written
+
+
 @main.command()
 @click.option("--dry-run", is_flag=True, help="Show what would be changed without writing.")
-def install(dry_run: bool) -> None:
+@click.option("--pre-commit", is_flag=True, help="Install pre-commit conflict hook in .git/hooks/.")
+def install(dry_run: bool, pre_commit: bool) -> None:
     """Auto-detect MCP clients and add Engram to their config."""
     added = []
     skipped = []
     steering_written = []
+
+    # Install pre-commit hook if requested
+    if pre_commit:
+        _install_pre_commit_hook(dry_run)
 
     for client_name, info in _MCP_CLIENTS.items():
         config_path: Path = info["path"]
