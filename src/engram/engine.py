@@ -1039,10 +1039,17 @@ class EngramEngine:
 
     async def _detection_worker(self) -> None:
         """Async worker: dequeue fact IDs and run conflict scan for each."""
-        logger.info("Detection worker running")
+        logger.info("Detection worker started")
+        self._detection_stats = {
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "facts_processed": 0,
+            "conflicts_found": 0,
+            "errors": 0,
+        }
         try:
             while True:
                 fact_id = await self._detection_queue.get()
+                logger.debug("Processing fact %s for conflict detection", fact_id[:12])
                 try:
                     # Re-generate embedding for facts that arrived without one
                     # (e.g. federated facts ingested from remote workspaces)
@@ -1050,11 +1057,14 @@ class EngramEngine:
                     # Ingest into the temporal knowledge graph
                     await self._ingest_into_tkg(fact_id)
                     await self._scan_fact_for_conflicts(fact_id)
-                except Exception:
-                    logger.exception("Detection error for fact %s", fact_id)
+                    self._detection_stats["facts_processed"] += 1
+                except Exception as e:
+                    self._detection_stats["errors"] += 1
+                    logger.exception("Detection error for fact %s: %s", fact_id, e)
                 finally:
                     self._detection_queue.task_done()
         except asyncio.CancelledError:
+            logger.info("Detection worker stopped. Stats: %s", self._detection_stats)
             pass
 
     async def _ensure_embedding(self, fact_id: str) -> None:
@@ -1127,6 +1137,7 @@ class EngramEngine:
             return  # expired or superseded — skip
 
         scope = fact.get("scope")
+        logger.info(f"[Detection] Scanning fact {fact_id[:12]} in scope '{scope}'")
         now = datetime.now(timezone.utc).isoformat()
 
         new_entities = extract_entities(fact.get("content") or "")
@@ -1169,6 +1180,11 @@ class EngramEngine:
                 if conflicts_on:
                     conflict_type, severity = self._classify_conflict_type(fact, other)
                     cid = uuid.uuid4().hex
+                    logger.info(
+                        f"[Conflict] Detected {conflict_type} conflict ({severity}) "
+                        f"on {fact_id[:12]} vs {other['id'][:12]}: {conflicts_on}"
+                    )
+                    self._detection_stats["conflicts_found"] += 1
                     await self.storage.insert_conflict(
                         {
                             "id": cid,
