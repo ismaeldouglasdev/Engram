@@ -38,8 +38,8 @@ _STYLE = Style.from_dict(
         "output.error": "ansired",
         "output.dim": "ansibrightblack",
         "menu.selected": "bold ansigreen",
-        "menu.item": "ansigray",
-        "menu.desc": "ansibrightblack",
+        "menu.item": "ansiwhite",
+        "menu.desc": "ansiwhite",
         "menu.arrow": "bold ansigreen",
         "toolbar": "bg:ansiblack ansigray",
         "toolbar.key": "bg:ansiblack ansigreen",
@@ -97,7 +97,13 @@ def run_tui(ws: Any, ctx: Any) -> None:
 
     # ── formatted text producers ──────────────────────────────────────────
 
-    _LOGO = [
+    _LOGO_OPEN = [
+        "  ▄████▄  ",
+        " ██▄██▄██ ",
+        " ███▀▀███ ",
+        " ▀ ▀  ▀ ▀ ",
+    ]
+    _LOGO_CLOSED = [
         "  ▄████▄  ",
         " ████████ ",
         " ███▀▀███ ",
@@ -105,20 +111,21 @@ def run_tui(ws: Any, ctx: Any) -> None:
     ]
 
     def header_text() -> AnyFormattedText:
+        logo = _LOGO_OPEN if state.get("eyes", "open") == "open" else _LOGO_CLOSED
         lines = [
             [
-                ("class:header.logo", _LOGO[0]),
+                ("class:header.logo", logo[0]),
                 ("class:header.title", "   Engram "),
                 ("class:header.version", f"v{_VERSION}"),
             ],
             [
-                ("class:header.logo", _LOGO[1]),
+                ("class:header.logo", logo[1]),
                 ("class:header.mode", f"   {mode_label} "),
                 ("class:header.id", f"· {workspace_id}"),
             ],
-            [("class:header.logo", _LOGO[2]), ("class:header.cwd", f"   {cwd}")],
+            [("class:header.logo", logo[2]), ("class:header.cwd", f"   {cwd}")],
             [
-                ("class:header.logo", _LOGO[3]),
+                ("class:header.logo", logo[3]),
                 ("class:header.tagline", "   Shared memory for engineering teams"),
             ],
         ]
@@ -269,6 +276,7 @@ def run_tui(ws: Any, ctx: Any) -> None:
                         focusable=False,
                     ),
                     wrap_lines=True,
+                    dont_extend_height=True,
                 ),
                 Window(
                     FormattedTextControl(separator_text, focusable=False),
@@ -300,6 +308,7 @@ def run_tui(ws: Any, ctx: Any) -> None:
                     dont_extend_height=True,
                     style="class:toolbar",
                 ),
+                Window(),  # Absorb remaining vertical space to push elements up
             ]
         ),
         focused_element=input_buf,
@@ -313,6 +322,20 @@ def run_tui(ws: Any, ctx: Any) -> None:
         cursor=CursorShape.BLINKING_BLOCK,
         mouse_support=False,
     )
+
+    import threading
+    import time
+
+    def _blink() -> None:
+        while True:
+            time.sleep(3)
+            state["eyes"] = "closed"
+            app.invalidate()
+            time.sleep(0.15)
+            state["eyes"] = "open"
+            app.invalidate()
+
+    threading.Thread(target=_blink, daemon=True).start()
 
     app.run()
 
