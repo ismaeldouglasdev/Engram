@@ -37,9 +37,9 @@ _STYLE = Style.from_dict(
         "output.cmd": "bold ansigreen",
         "output.error": "ansired",
         "output.dim": "ansibrightblack",
-        "menu.selected": "bold ansigreen",
-        "menu.item": "ansiwhite",
-        "menu.desc": "ansiwhite",
+        "menu.selected": "bold ansiwhite bg:default noreverse",
+        "menu.item": "ansibrightblack",
+        "menu.desc": "ansibrightblack",
         "menu.arrow": "bold ansigreen",
         "toolbar": "bg:ansiblack ansigray",
         "toolbar.key": "bg:ansiblack ansigreen",
@@ -163,6 +163,10 @@ def run_tui(ws: Any, ctx: Any) -> None:
     def toolbar_text() -> AnyFormattedText:
         return [
             ("class:toolbar.key", "  ↑↓"),
+            ("class:toolbar", "/"),
+            ("class:toolbar.key", "j"),
+            ("class:toolbar", "/"),
+            ("class:toolbar.key", "k"),
             ("class:toolbar", " navigate"),
             ("class:toolbar.sep", "   ·   "),
             ("class:toolbar.key", "Enter"),
@@ -212,19 +216,39 @@ def run_tui(ws: Any, ctx: Any) -> None:
             )
             return
 
+        if cmd == "search" and not arg:
+            output_lines.append(("class:output.error", "  Usage: search <query>\n"))
+            return
+
         _run_engram_command(cmd, arg, output_lines)
 
     kb = KeyBindings()
 
     @kb.add("up")
+    @kb.add("c-p")
     def _up(event: Any) -> None:
-        state["selected"] = max(0, state["selected"] - 1)
-        event.app.invalidate()
+        if not input_buf.text:
+            state["selected"] = max(0, state["selected"] - 1)
+            event.app.invalidate()
 
     @kb.add("down")
+    @kb.add("c-n")
     def _down(event: Any) -> None:
-        state["selected"] = min(len(_MENU_ITEMS) - 1, state["selected"] + 1)
-        event.app.invalidate()
+        if not input_buf.text:
+            state["selected"] = min(len(_MENU_ITEMS) - 1, state["selected"] + 1)
+            event.app.invalidate()
+
+    @kb.add("j")
+    def _j(event: Any) -> None:
+        if not input_buf.text:
+            state["selected"] = min(len(_MENU_ITEMS) - 1, state["selected"] + 1)
+            event.app.invalidate()
+
+    @kb.add("k")
+    def _k(event: Any) -> None:
+        if not input_buf.text:
+            state["selected"] = max(0, state["selected"] - 1)
+            event.app.invalidate()
 
     @kb.add("enter")
     def _enter(event: Any) -> None:
