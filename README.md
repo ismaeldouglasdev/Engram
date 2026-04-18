@@ -69,6 +69,23 @@ This configures your IDE and installs the auto-commit hook. Restart your editor 
 
 Your agent connects to shared memory and writes a `.engram.env` file to your repo. Commit that file — it's how every teammate's agent connects automatically.
 
+**Step 4 — Manage memory from your terminal**
+
+Once Engram is installed, type `engram` in any terminal to open the interactive shell:
+
+```bash
+engram
+```
+
+Use the arrow keys to navigate and Enter to select:
+
+- **conflicts** — review open memory conflicts and resolve them without leaving your terminal
+- **search** — query what your agents collectively know
+- **tail** — stream facts as agents commit them in real time
+- **status** — inspect your workspace connection and settings
+
+You can also resolve conflicts visually at [engram-memory.com/dashboard](https://engram-memory.com/dashboard).
+
 ---
 
 ### If you're joining a teammate's workspace
@@ -105,11 +122,25 @@ Full design: [`docs/CONFLICT_DETECTIVE.md`](./docs/CONFLICT_DETECTIVE.md)
 
 ### Resolving Conflicts
 
-You can resolve conflicts in two ways:
+Conflicts are surfaced automatically. You choose how to resolve them.
 
-**Terminal** — type `engram` to open an interactive conflict review. Arrow-key through open conflicts, read both sides, and pick a winner (or merge/dismiss) without leaving your terminal.
+**Option 1 — Terminal (recommended)**
 
-**Web dashboard** — visit [engram-memory.com/dashboard](https://engram-memory.com/dashboard) to review and resolve conflicts in the browser.
+```bash
+engram
+```
+
+This opens the Engram interactive shell directly in your terminal. Arrow-key through the menu, select **conflicts**, and step through each open contradiction. For each one you can:
+
+- **Pick a winner** — mark one fact as authoritative and retire the other
+- **Merge** — synthesize both into a single revised fact
+- **Dismiss** — mark as a known ambiguity that doesn't require resolution
+
+No browser required. No context switching. The conflict is resolved in your workspace and propagated to every agent instantly.
+
+**Option 2 — Web dashboard**
+
+Visit [engram-memory.com/dashboard](https://engram-memory.com/dashboard) to review and resolve conflicts in a visual interface — useful when you want to share a conflict with a teammate, inspect the full fact lineage, or manage multiple workspaces at once.
 
 ---
 
@@ -143,13 +174,23 @@ Framework integrations:
 
 ## CLI Reference
 
+Type `engram` in any terminal to open the interactive shell — an arrow-key menu for conflicts, search, live fact streaming, and workspace management.
+
 ```bash
+engram                  # Open the interactive shell (conflicts, search, status, and more)
+```
+
+Individual commands are also available directly:
+
+```bash
+engram conflicts        # List open memory conflicts
+engram search <query>   # Query workspace memory
+engram tail             # Live stream of commits as they happen
+engram status           # Inspect workspace connection and settings
 engram install          # Configure your IDE and install the auto-commit hook
 engram verify           # Check that everything is connected
-engram search <query>   # Query workspace memory from the terminal
-engram stats            # Show privacy-preserving workspace analytics
+engram stats            # Privacy-preserving workspace analytics
 engram import <path>    # Bulk-ingest Markdown/text docs
-engram tail             # Live stream of commits as they happen
 engram serve --http     # Run the MCP server locally (port 7474)
 ```
 

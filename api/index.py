@@ -668,6 +668,29 @@ def _render_landing() -> str:
           </div>
         </div>
       </div>
+      <div class="install-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+          <div class="step-title">Manage memory from your terminal</div>
+          <div class="step-desc" style="margin-top:8px;font-size:14px;color:var(--t2);line-height:1.6;">
+            Type <code style="font-family:'JetBrains Mono',monospace;font-size:13px;background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.18);padding:2px 7px;border-radius:5px;color:var(--em4);">engram</code> in any terminal to open the interactive shell.
+            Review open conflicts, search workspace memory, stream live facts, and resolve contradictions — all without leaving your editor.
+          </div>
+          <div class="code-block" style="margin-top:14px;">
+            <button class="copy-btn" onclick="copyCode('engram-cmd', event)">Copy</button>
+            <div id="engram-cmd">engram</div>
+          </div>
+          <div style="margin-top:14px;display:flex;align-items:flex-start;gap:10px;padding:14px 16px;
+            background:rgba(52,211,153,0.05);border:1px solid rgba(52,211,153,0.12);border-radius:10px;">
+            <svg style="flex-shrink:0;margin-top:1px;" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--emerald-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>
+            <span style="font-size:13px;color:var(--t2);line-height:1.6;">
+              Prefer a visual interface? Review and resolve conflicts from the
+              <a href="/dashboard" style="color:var(--em4);text-decoration:none;font-weight:600;">web dashboard</a> at
+              <a href="https://engram-memory.com/dashboard" style="color:var(--em4);text-decoration:none;">engram-memory.com</a>.
+            </span>
+          </div>
+        </div>
+      </div>
     </div>
     <p class="ide-note">
       <span>Claude Code · Claude Desktop · Cursor · VS Code · Windsurf · Kiro · Zed · Amazon Q · Trae · JetBrains · Cline · Roo Code · OpenCode</span><br>
