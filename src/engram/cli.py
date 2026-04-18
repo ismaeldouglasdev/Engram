@@ -799,7 +799,7 @@ def install(dry_run: bool) -> None:
         click.echo("⚡ Auto-commit hook installed: every Kiro message → Engram")
 
     if added:
-        click.echo("\n→ Restart your editor and ask your agent: 'Set up Engram for my team'")
+        click.echo("\n→ Restart your editor and ask your agent: 'Set up Engram for my agents'")
     elif not added and not skipped:
         click.echo(
             "\nNo MCP clients detected. Add Engram manually:\n\n"
@@ -2461,7 +2461,7 @@ def _run_diagnostics(command_name: str, verbose: bool, load_nli: bool) -> bool:
         click.echo("✓ All checks passed! All required checks passed. Engram is ready to use.")
         click.echo("\nNext steps:")
         click.echo("  1. Restart your IDE")
-        click.echo("  2. Ask your agent: 'Set up Engram for my team'")
+        click.echo("  2. Ask your agent: 'Set up Engram for my agents'")
         click.echo(f"  3. Run 'engram {command_name}' anytime to re-check")
     else:
         click.echo(

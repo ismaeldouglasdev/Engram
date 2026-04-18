@@ -657,7 +657,7 @@ def _render_landing() -> str:
           <div class="step-title">Ask your agent</div>
           <div class="code-block">
             <button class="copy-btn" onclick="copyCode('setup-prompt', event)">Copy</button>
-            <div id="setup-prompt">"Set up Engram for my team"</div>
+            <div id="setup-prompt">"Set up Engram for my agents"</div>
           </div>
         </div>
       </div>

@@ -64,10 +64,8 @@ This configures your IDE and installs the auto-commit hook. Restart your editor 
 **Step 3 — Ask your agent to connect**
 
 ```
-"Set up Engram for my team"
+"Set up Engram for my agents"
 ```
-
-Your agent connects to shared memory and writes a `.engram.env` file to your repo. Commit that file — it's how every agent connects automatically.
 
 **Step 4 — Manage memory from your terminal**
 
