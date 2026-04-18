@@ -18,7 +18,7 @@ Every agent sees the same verified facts. When agents contradict each other, Eng
 
 Your AI agents work in parallel — or lose their memory once the session ends. One agent learns something, another learns something different, and now they disagree. Engram detects that and surfaces it before it becomes a bug.
 
-Every agent's messages are automatically committed to shared memory as facts. No manual step. No copy-pasting context between sessions. Knowledge accumulates and every agent benefits from it instantly. And the best part — you can add team members who are also working on your project.
+Every agent's messages are automatically committed to shared memory as facts. And the best part — you can add team members who are also working on your project.
 
 ## Why It Matters
 
