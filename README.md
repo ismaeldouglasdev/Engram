@@ -95,11 +95,7 @@ Run the same installer as above for your OS. This configures your IDE and instal
 
 **Step 2 — Accept the invite**
 
-Click the invite link, sign in at [engram-memory.com](https://engram-memory.com), and accept the workspace invite. This writes your invite key to `.engram.env` in the repo.
-
-When you open the codebase, your agent reads that file and connects automatically.
-
-> Your agent's messages will be recorded as facts in the shared workspace — this is what Engram does. You agreed to this when you accepted the invite. Leave the workspace at any time from the dashboard.
+Click the invite link, sign in at [engram-memory.com](https://engram-memory.com), and accept the workspace invite. Your agent will connect automatically.
 
 ---
 
