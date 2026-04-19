@@ -273,6 +273,7 @@ def build_rest_routes(
         as_of = body.get("as_of")
         fact_type = body.get("fact_type")
         agent_id = body.get("agent_id")
+        include_history = bool(body.get("include_history", False))
 
         try:
             limit = int(limit)
@@ -308,6 +309,7 @@ def build_rest_routes(
                 limit=limit,
                 as_of=as_of,
                 fact_type=fact_type,
+                include_history=include_history,
             )
         except Exception as exc:
             logger.exception("REST /api/query error")

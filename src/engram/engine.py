@@ -599,6 +599,7 @@ class EngramEngine:
         fact_type: str | None = None,
         include_ephemeral: bool = False,
         include_adjacent: bool = False,
+        include_history: bool = False,
         agent_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query what the team's agents collectively know about a topic.
@@ -852,6 +853,30 @@ class EngramEngine:
             loop_warning = self._check_query_loop(agent_id, topic)
             if loop_warning:
                 logger.warning(loop_warning)
+
+        # Enrich results with lineage history so agents understand how each
+        # fact evolved over time — only for facts that have prior versions.
+        if include_history:
+            for result in results:
+                lid = result.get("lineage_id")
+                if not lid:
+                    result["history"] = []
+                    continue
+                all_versions = await self.storage.get_facts_by_lineage(lid)
+                # Exclude the current fact (already in results), oldest-first
+                prior = [
+                    {
+                        "content": f["content"],
+                        "committed_at": f["committed_at"],
+                        "agent_id": f["agent_id"],
+                        "fact_type": f.get("fact_type", "observation"),
+                        "confidence": f.get("confidence"),
+                        "superseded": f.get("valid_until") is not None,
+                    }
+                    for f in reversed(all_versions)
+                    if f["id"] != result.get("fact_id")
+                ]
+                result["history"] = prior
 
         return results
 

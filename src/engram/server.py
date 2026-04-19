@@ -966,6 +966,7 @@ async def engram_query(
     agent_id: str | None = None,
     include_ephemeral: bool = False,
     include_adjacent: bool = False,
+    include_history: bool = False,
 ) -> list[dict[str, Any]]:
     """Query what your team's agents collectively know about a topic.
 
@@ -1008,6 +1009,12 @@ async def engram_query(
       results are marked with adjacent=true and include their original_scope
       so you can distinguish in-scope from related knowledge. Useful when
       a query might benefit from cross-cutting context. Default: false.
+    - include_history: When true, each returned fact includes a `history`
+      array showing all prior versions in its lineage — oldest first. Each
+      history entry has content, committed_at, agent_id, fact_type,
+      confidence, and superseded. Use this to understand how knowledge
+      evolved over time, e.g. to detect reversals or see who changed what.
+      Default: false.
 
     Returns: List of claims with content, scope, confidence, agent_id,
     committed_at, has_open_conflict, verified, fact_type, durability,
@@ -1077,6 +1084,7 @@ async def engram_query(
         fact_type=fact_type,
         include_ephemeral=include_ephemeral,
         include_adjacent=include_adjacent,
+        include_history=include_history,
     )
 
 
