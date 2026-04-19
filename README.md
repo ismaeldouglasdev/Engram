@@ -75,12 +75,7 @@ Once Engram is installed, type `engram` in any terminal to open the interactive 
 engram
 ```
 
-It opens straight to your open conflicts. Type `resolve <id> <resolution>` to settle one, or run any command directly:
-
-- `conflicts` — refresh the conflict list
-- `search <query>` — query what your agents collectively know
-- `tail` — stream facts as agents commit them in real time
-- `status` — inspect your workspace connection and settings
+From here you can ask questions or talk to Engram about your workspace and resolve conflicts.
 
 You can also ask your agent to merge memory spaces — it will pull durable facts from another workspace into this one automatically.
 
