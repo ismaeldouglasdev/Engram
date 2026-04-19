@@ -93,9 +93,14 @@ def _http_get(url: str, timeout: int = 5) -> Any | None:
     """GET url, return parsed JSON or None on any error."""
     try:
         parsed = urllib.parse.urlparse(url)
-        conn = http.client.HTTPConnection(
-            parsed.hostname or "localhost", parsed.port or 80, timeout=timeout
-        )
+        use_https = parsed.scheme == "https"
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if use_https else 80)
+        conn: http.client.HTTPConnection
+        if use_https:
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout)
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
         conn.request("GET", parsed.path + (f"?{parsed.query}" if parsed.query else ""))
         resp = conn.getresponse()
         if resp.status == 200:
@@ -110,9 +115,14 @@ def _http_post(url: str, body: dict[str, Any], timeout: int = 5) -> tuple[int, A
     try:
         parsed = urllib.parse.urlparse(url)
         raw = json.dumps(body).encode()
-        conn = http.client.HTTPConnection(
-            parsed.hostname or "localhost", parsed.port or 80, timeout=timeout
-        )
+        use_https = parsed.scheme == "https"
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if use_https else 80)
+        conn: http.client.HTTPConnection
+        if use_https:
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout)
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
         conn.request(
             "POST",
             parsed.path,
@@ -120,7 +130,12 @@ def _http_post(url: str, body: dict[str, Any], timeout: int = 5) -> tuple[int, A
             {"Content-Type": "application/json", "Content-Length": str(len(raw))},
         )
         resp = conn.getresponse()
-        return resp.status, json.loads(resp.read())
+        raw_body = resp.read()
+        try:
+            data = json.loads(raw_body) if raw_body.strip() else {}
+        except Exception:
+            data = {"error": raw_body.decode(errors="replace")[:200]}
+        return resp.status, data
     except Exception as exc:
         return 0, {"error": str(exc)}
 
