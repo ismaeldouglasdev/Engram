@@ -24,6 +24,8 @@ from prompt_toolkit.styles import Style
 
 _LOCAL_SERVER = "http://localhost:7474"
 
+_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
 _CATEGORIES = [
     ("About you", "Tell me something about yourself your agents should remember"),
     ("About the codebase", "Tell me something about this codebase worth knowing"),
@@ -118,6 +120,8 @@ def run_tui(ws: Any, ctx: Any) -> None:
         "selected_category": -1,
         "flash": "",
         "flash_style": "class:flash.ok",
+        "spinner_frame": 0,
+        "scanning": True,
     }
 
     input_buf = Buffer(name="main_input", multiline=False)
@@ -156,8 +160,14 @@ def run_tui(ws: Any, ctx: Any) -> None:
     def status_line() -> AnyFormattedText:
         if state["flash"]:
             return _content_line([(state["flash_style"], state["flash"])])
-        if not state["conflicts_loaded"]:
-            return _content_line([("class:status.loading", "Checking conflicts...")])
+        if state["scanning"]:
+            frame = _SPINNER[state["spinner_frame"] % len(_SPINNER)]
+            return _content_line(
+                [
+                    ("class:status.loading", f"{frame} "),
+                    ("class:status.loading", "Scanning codebase..."),
+                ]
+            )
         n = len(state["conflicts"])
         if n == 0:
             return _content_line([("class:status.ok", "✓ No conflicts")])
@@ -288,13 +298,24 @@ def run_tui(ws: Any, ctx: Any) -> None:
         mouse_support=False,
     )
 
+    def _spinner_loop() -> None:
+        while state["scanning"]:
+            time.sleep(0.08)
+            state["spinner_frame"] += 1
+            try:
+                app.invalidate()
+            except Exception:
+                break
+
     def _load_conflicts() -> None:
         base = _server_url(ws)
         data = _http_get(f"{base}/api/conflicts?status=open", timeout=8)
         state["conflicts_loaded"] = True
+        state["scanning"] = False
         state["conflicts"] = data if isinstance(data, list) else []
         app.invalidate()
 
+    threading.Thread(target=_spinner_loop, daemon=True).start()
     threading.Thread(target=_load_conflicts, daemon=True).start()
 
     app.run()

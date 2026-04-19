@@ -2,7 +2,7 @@
 
 # Engram
 
-**Shared memory for your AI agents**
+**Active memory for your AI agents — outlasting sessions, never sleeping**
 
 Every agent sees the same verified facts. When agents contradict each other, Engram catches it before it becomes a bug.
 
@@ -16,9 +16,11 @@ Every agent sees the same verified facts. When agents contradict each other, Eng
 
 ## How It Works
 
-Your AI agents work in parallel — or lose their memory once the session ends. One agent learns something, another learns something different, and now they disagree. Engram detects that and surfaces it before it becomes a bug.
+Your brain never turns off — even when you're asleep, it's consolidating memory, surfacing patterns, preparing for what comes next. Your agents don't work that way. They lose everything the moment a session ends.
 
-Every agent's messages are automatically committed to shared memory as facts. And the best part — you can add team members who are also working on your project.
+Engram changes that. Every agent's messages are committed to active memory as verified facts — and Engram keeps working between sessions, constantly scanning the codebase and surfacing contradictions before any agent acts on stale information. The longer it runs, the more it knows. Every hour of inference time compounds.
+
+You can also add team members. Every agent on the workspace sees the same memory.
 
 ## Why It Matters
 
@@ -183,6 +185,19 @@ engram serve --http     # Run the MCP server locally (port 7474)
 
 ---
 
+## Plans
+
+Engram's active memory runs on a credit model — the more hours it scans, the more it learns. Plans are in preview.
+
+| Plan | Active hours/day | What you get |
+|------|-----------------|------|
+| **Free** | 1 hr | On-demand conflict check, basic memory capture |
+| **Builder** | 2 hrs | Nightly scan, morning briefing, basic conflict detection |
+| **Team** | 8 hrs | Real-time file watching during work hours, faster drift detection |
+| **Scale** | 24 hrs | Always-on across the whole org, cross-agent learning, instant conflict surfacing |
+
+---
+
 ## Self-Hosting
 
 Engram runs on any Postgres database. Point it at your own instance and your facts never leave your infrastructure.
@@ -222,5 +237,5 @@ PRs welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`HIRING.md`](./HIRI
 ---
 
 <div align="center">
-<sub>An engram is the physical trace a memory leaves in the brain — the actual unit of stored knowledge.</sub>
+<sub>An engram is the physical trace a memory leaves in the brain — the actual unit of stored knowledge. Active memory that never sleeps.</sub>
 </div>
