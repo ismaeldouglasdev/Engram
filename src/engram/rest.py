@@ -1003,14 +1003,16 @@ def build_rest_routes(
         else:
             system_content += "No relevant facts found in memory."
 
-        payload = _json.dumps({
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": message},
-            ],
-            "max_tokens": 1024,
-        }).encode()
+        payload = _json.dumps(
+            {
+                "model": "gpt-4o",
+                "messages": [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": message},
+                ],
+                "max_tokens": 1024,
+            }
+        ).encode()
 
         try:
             conn = http.client.HTTPSConnection("api.openai.com", timeout=30)

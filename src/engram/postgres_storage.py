@@ -530,7 +530,9 @@ class PostgresStorage(BaseStorage):
                 *values,
             )
 
-    async def conflict_exists(self, fact_a_id: str, fact_b_id: str, status: str | None = None) -> bool:
+    async def conflict_exists(
+        self, fact_a_id: str, fact_b_id: str, status: str | None = None
+    ) -> bool:
         """Check if a conflict already exists between two facts (in either order) within this workspace.
 
         Defaults to checking all statuses so resolved/dismissed conflicts block re-detection.

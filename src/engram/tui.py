@@ -67,18 +67,23 @@ _HELP_LINES: list[tuple[str, str]] = [
     ("class:output.dim", "\n"),
     ("class:output", "  Commands:\n"),
     ("class:output", "    conflicts                           — refresh conflict list\n"),
-    ("class:output", "    merge                               — merge with another person's memory\n"),
+    (
+        "class:output",
+        "    merge                               — merge with another person's memory\n",
+    ),
     ("class:output", "    clear                               — clear output  (Ctrl+L)\n"),
     ("class:output", "    quit / q                            — exit          (Ctrl+C)\n"),
     ("class:output.dim", "\n"),
-    ("class:output.dim", "  Any other text is sent to the AI with your full fact corpus as context.\n"),
+    (
+        "class:output.dim",
+        "  Any other text is sent to the AI with your full fact corpus as context.\n",
+    ),
     ("class:output.dim", "  Every message you send is also saved as an Engram memory.\n"),
     ("class:output.dim", "\n"),
 ]
 
 # Default local server address — matches `engram serve --http`
 _LOCAL_SERVER = "http://localhost:7474"
-
 
 
 # ── server API helpers ────────────────────────────────────────────────
@@ -118,7 +123,6 @@ def _http_post(url: str, body: dict[str, Any], timeout: int = 5) -> tuple[int, A
         return resp.status, json.loads(resp.read())
     except Exception as exc:
         return 0, {"error": str(exc)}
-
 
 
 def _server_url(ws: Any) -> str:
@@ -458,15 +462,16 @@ def run_tui(ws: Any, ctx: Any) -> None:
 
         # Auto-commit every message as an Engram fact (in background)
         import threading
-        threading.Thread(
-            target=_commit_user_message, args=(ws, text), daemon=True
-        ).start()
+
+        threading.Thread(target=_commit_user_message, args=(ws, text), daemon=True).start()
 
         if cmd == "merge":
             output_lines.append(
                 ("class:output.label", "  engram merge — join another memory space\n\n")
             )
-            output_lines.append(("class:output", "  Enter the invite key from the other workspace:\n"))
+            output_lines.append(
+                ("class:output", "  Enter the invite key from the other workspace:\n")
+            )
             state["waiting_for_invite_key"] = True
             app.invalidate()
             return
