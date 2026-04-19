@@ -438,15 +438,14 @@ def run_tui(ws: Any, ctx: Any) -> None:
         return Point(x=0, y=max(0, total - 1))
 
     def question_text() -> AnyFormattedText:
-        return [("class:output.dim", "  Tell me something your agents should always remember")]
+        return [("class:prompt", "  Tell me something your agents should always remember")]
 
     def tabs_text() -> AnyFormattedText:
         parts: list[tuple[str, str]] = [("class:output.dim", "  ")]
         for i, name in enumerate(_CATEGORIES):
             if i > 0:
                 parts.append(("class:output.dim", "  "))
-            style = "class:prompt" if i == state["selected_category"] else "class:output.dim"
-            parts.append((style, f"[ {name} ]"))
+            parts.append(("class:output.dim", f"[ {name} ]"))
         return parts
 
     def toolbar_text() -> AnyFormattedText:
