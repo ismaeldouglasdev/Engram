@@ -751,9 +751,28 @@ def run_tui(ws: Any, ctx: Any) -> None:
         import threading
         import time
 
-        # For local mode, commit in background via REST API
-        if not _is_hosted(ws):
-            threading.Thread(target=_commit_user_message, args=(ws, text), daemon=True).start()
+        # Commit user message to memory (non-blocking for both hosted and local modes)
+        threading.Thread(target=_commit_user_message, args=(ws, text), daemon=True).start()
+
+        # Query memory for context before processing agent interactions
+        def _query_memory_for_context(topic: str) -> list[dict]:
+            if _is_hosted(ws):
+                result = _mcp_call(ws, "engram_query", {"topic": topic, "limit": 10})
+                return (result or {}).get("facts", []) if isinstance(result, dict) else []
+            else:
+                base = _server_url(ws)
+                auth = {}
+                if getattr(ws, "invite_key", ""):
+                    auth["Authorization"] = f"Bearer {ws.invite_key}"
+                status, data = _http_post(
+                    f"{base}/api/query",
+                    {"topic": topic, "limit": 10},
+                    headers=auth,
+                    timeout=10,
+                )
+                if status == 200:
+                    return data.get("facts", []) if isinstance(data, dict) else []
+            return []
 
         def _trigger_scan(a: Application) -> None:
             if state["scanning"] or state["scan_paused"]:
@@ -919,6 +938,17 @@ def run_tui(ws: Any, ctx: Any) -> None:
             # Short input (A/B) matched an open conflict — already handled
             pass
         else:
+            # Query memory for context before handling agent interactions
+            facts = _query_memory_for_context(text)
+            if facts:
+                output_lines.append(
+                    ("class:output.dim", "  Memory context:\n")
+                )
+                for f in facts[:3]:
+                    content = (f.get("content") or "").strip()[:120]
+                    output_lines.append(("class:output.dim", f"  · {content}\n"))
+                output_lines.append(("class:output.dim", "\n"))
+
             # Unknown command → conversational chat with memory context
             reply = _openai_chat(ws, text, output_lines, history=conversation_history)
             if reply is not None:
