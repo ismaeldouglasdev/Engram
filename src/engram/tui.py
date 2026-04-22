@@ -72,6 +72,10 @@ _HELP_LINES: list[tuple[str, str]] = [
     ("class:output", "    conflicts                           — refresh conflict list\n"),
     (
         "class:output",
+        "    resolve <id> keep_a|keep_b|dismiss  — resolve a conflict\n",
+    ),
+    (
+        "class:output",
         "    merge                               — merge with another person's memory\n",
     ),
     ("class:output", "    clear                               — clear output  (Ctrl+L)\n"),
@@ -79,9 +83,8 @@ _HELP_LINES: list[tuple[str, str]] = [
     ("class:output.dim", "\n"),
     (
         "class:output.dim",
-        "  Any other text is sent to the AI with your full fact corpus as context.\n",
+        "  Type A or B to resolve the current conflict. Any other text is sent to the AI.\n",
     ),
-    ("class:output.dim", "  Every message you send is also saved as an Engram memory.\n"),
     ("class:output.dim", "\n"),
 ]
 
@@ -163,6 +166,21 @@ def _is_hosted(ws: Any) -> bool:
     return not base.startswith("http://localhost") and not base.startswith("http://127.")
 
 
+def _parse_mcp_response(data: Any) -> Any | None:
+    """Extract the tool result from a parsed MCP JSON-RPC response dict."""
+    try:
+        content = (data.get("result") or {}).get("content", [])
+        if content:
+            text = content[0].get("text", "")
+            try:
+                return json.loads(text)
+            except Exception:
+                return {"reply": text} if text else None
+    except Exception:
+        pass
+    return data.get("result")
+
+
 def _mcp_call(ws: Any, tool: str, arguments: dict[str, Any]) -> Any | None:
     """Call an MCP tool via JSON-RPC POST to <server>/mcp.  Returns the result or None."""
     base = _server_url(ws)
@@ -176,17 +194,29 @@ def _mcp_call(ws: Any, tool: str, arguments: dict[str, Any]) -> Any | None:
         "method": "tools/call",
         "params": {"name": tool, "arguments": arguments},
     }
-    status, data = _http_post(f"{base}/mcp", body, timeout=10, headers=auth)
+    status, data = _http_post(f"{base}/mcp", body, timeout=15, headers=auth)
     if status != 200:
         return None
-    # MCP responses wrap the result in data.result.content[0].text (JSON string)
-    try:
-        content = data.get("result", {}).get("content", [])
-        if content:
-            return json.loads(content[0].get("text", "{}"))
-    except Exception:
-        pass
-    return data.get("result")
+
+    # When the server returns text/event-stream (SSE), _http_post can't JSON-parse
+    # the raw body and stashes it in {"error": "<raw text>"}. Extract data: lines.
+    if isinstance(data, dict) and "error" in data and "result" not in data:
+        raw_text = data["error"]
+        if not isinstance(raw_text, str):
+            return None
+        for line in raw_text.splitlines():
+            line = line.strip()
+            if line.startswith("data:"):
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    data = json.loads(payload)
+                    break
+                except Exception:
+                    continue
+
+    return _parse_mcp_response(data)
 
 
 # ── OpenAI chat proxied through Engram server ─────────────────────────
@@ -279,15 +309,20 @@ def _openai_chat(
             except Exception:
                 pass
 
-        # No API key — show a brief memory summary instead of raw facts
+        # No API key — show a clear message and any relevant memory as context
         output_lines.append(("class:output.dim", "\n"))
+        output_lines.append(
+            (
+                "class:output.warn",
+                "  ⚠ No AI API key configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY "
+                "for conversational responses.\n",
+            )
+        )
         if facts:
-            output_lines.append(("class:output.dim", "  Relevant memory:\n"))
+            output_lines.append(("class:output.dim", "\n  Related memory:\n"))
             for f in facts[:3]:
                 content = (f.get("content") or "").strip()[:120]
                 output_lines.append(("class:output.dim", f"  · {content}\n"))
-        else:
-            output_lines.append(("class:output.dim", "  Nothing in memory on that topic yet.\n"))
         output_lines.append(("class:output.dim", "\n"))
         return None
 
@@ -427,45 +462,124 @@ def _resolve_conflict(
 
     winning_claim_id: str | None = None
     if resolution_type.lower() in ("keep_a", "keep_b"):
-        data = _http_get(f"{base}/api/conflicts?status=open")
-        if isinstance(data, list):
-            for c in data:
-                cid = c.get("conflict_id") or c.get("id") or ""
-                if cid.startswith(conflict_id):
-                    if resolution_type.lower() == "keep_a":
-                        fa = c.get("fact_a") or {}
-                        winning_claim_id = fa.get("fact_id") or fa.get("id") or c.get("fact_a_id")
-                    else:
-                        fb = c.get("fact_b") or {}
-                        winning_claim_id = fb.get("fact_id") or fb.get("id") or c.get("fact_b_id")
-                    conflict_id = cid
-                    break
+        if _is_hosted(ws):
+            raw = _mcp_call(ws, "engram_conflicts", {"status": "open"})
+            conflicts_list = (
+                raw.get("conflicts", [])
+                if isinstance(raw, dict)
+                else (raw if isinstance(raw, list) else [])
+            )
+        else:
+            auth_headers: dict[str, str] = {}
+            if ws and getattr(ws, "invite_key", ""):
+                auth_headers["Authorization"] = f"Bearer {ws.invite_key}"
+            data = _http_get(f"{base}/api/conflicts?status=open", headers=auth_headers)
+            conflicts_list = data if isinstance(data, list) else []
+        for c in conflicts_list:
+            cid = c.get("conflict_id") or c.get("id") or ""
+            if cid.startswith(conflict_id):
+                if resolution_type.lower() == "keep_a":
+                    fa = c.get("fact_a") or {}
+                    winning_claim_id = fa.get("fact_id") or fa.get("id") or c.get("fact_a_id")
+                else:
+                    fb = c.get("fact_b") or {}
+                    winning_claim_id = fb.get("fact_id") or fb.get("id") or c.get("fact_b_id")
+                conflict_id = cid
+                break
 
     note = f"Resolved via TUI ({resolution_type})"
-    payload: dict[str, Any] = {
+    mcp_payload: dict[str, Any] = {
         "conflict_id": conflict_id,
         "resolution_type": resolution_type_norm,
         "resolution": note,
     }
     if winning_claim_id:
-        payload["winning_claim_id"] = winning_claim_id
+        mcp_payload["winning_claim_id"] = winning_claim_id
 
-    status, result = _http_post(f"{base}/api/resolve", payload)
-
-    if status == 0:
-        output_lines.append(("class:output.dim", "  (server offline — using local engine)\n"))
-        _run_engram_command("resolve", f"{conflict_id} {resolution_type_norm} {note}", output_lines)
-        return
-
-    if status != 200:
-        err = result.get("error") or result.get("detail") or f"HTTP {status}"
-        output_lines.append(("class:output.error", f"  Resolve failed: {err}\n"))
-        return
+    if _is_hosted(ws):
+        result = _mcp_call(ws, "engram_resolve", mcp_payload)
+        if result is None:
+            output_lines.append(
+                ("class:output.error", "  Resolve failed: could not reach server.\n")
+            )
+            return
+    else:
+        http_status, result = _http_post(f"{base}/api/resolve", mcp_payload)
+        if http_status == 0:
+            output_lines.append(("class:output.dim", "  (server offline — using local engine)\n"))
+            _run_engram_command(
+                "resolve", f"{conflict_id} {resolution_type_norm} {note}", output_lines
+            )
+            return
+        if http_status != 200:
+            err = (
+                (result or {}).get("error") or (result or {}).get("detail") or f"HTTP {http_status}"
+            )
+            output_lines.append(("class:output.error", f"  Resolve failed: {err}\n"))
+            return
 
     output_lines.append(
         ("class:output.label", f"  ✓ Conflict {conflict_id[:8]} resolved ({resolution_type}).\n")
     )
     output_lines.append(("class:output.dim", "  Dashboard will reflect this immediately.\n"))
+
+
+def _try_resolve_from_short_input(
+    ws: Any,
+    text: str,
+    output_lines: list[tuple[str, str]],
+) -> bool:
+    """Check if short input (e.g. "A", "B") matches an open conflict.
+
+    If there's exactly one open conflict and the user types "A" or "B",
+    resolve it directly. Returns True if the input was handled.
+    """
+    text_upper = text.strip().upper()
+    if text_upper not in ("A", "B"):
+        return False
+
+    # Fetch open conflicts
+    base = _server_url(ws)
+    if _is_hosted(ws):
+        result = _mcp_call(ws, "engram_conflicts", {"status": "open"})
+        conflicts = []
+        if isinstance(result, dict):
+            conflicts = result.get("conflicts", result)
+            if isinstance(conflicts, dict):
+                conflicts = []
+        elif isinstance(result, list):
+            conflicts = result
+    else:
+        auth_headers: dict[str, str] = {}
+        if ws and getattr(ws, "invite_key", ""):
+            auth_headers["Authorization"] = f"Bearer {ws.invite_key}"
+        data = _http_get(f"{base}/api/conflicts?status=open", timeout=5, headers=auth_headers)
+        conflicts = data if isinstance(data, list) else []
+
+    if not conflicts:
+        return False
+
+    # If there's exactly one open conflict, resolve it directly
+    if len(conflicts) == 1:
+        c = conflicts[0]
+        cid = c.get("conflict_id") or c.get("id") or ""
+        resolution = "keep_a" if text_upper == "A" else "keep_b"
+        chosen = c.get("fact_a", {}).get("content") or c.get("fact_a_content") or ""
+        if text_upper == "B":
+            chosen = c.get("fact_b", {}).get("content") or c.get("fact_b_content") or ""
+        chosen_short = chosen.strip()[:80]
+
+        output_lines.append(("class:output.dim", "\n"))
+        output_lines.append(
+            ("class:output.ai", f'  Got it — keeping {text_upper}: "{chosen_short}"\n')
+        )
+        _resolve_conflict(ws, cid, resolution, output_lines)
+        output_lines.append(("class:output.dim", "\n"))
+        _load_conflicts(ws, output_lines)
+        return True
+
+    # Multiple conflicts — can't tell which one the user means
+    return False
 
 
 # ── merge (join another workspace) ────────────────────────────────────
@@ -569,7 +683,7 @@ def run_tui(ws: Any, ctx: Any) -> None:
         return [
             (
                 "class:output.dim",
-                "  Resolve conflicts, or tell me something your agents should always remember",
+                "  Tell me something your agents should remember",
             ),
         ]
 
@@ -585,9 +699,6 @@ def run_tui(ws: Any, ctx: Any) -> None:
             ]
         return [
             ("class:toolbar", "  "),
-            ("class:toolbar.key", "conflicts"),
-            ("class:toolbar", " refresh"),
-            ("class:toolbar.sep", "   ·   "),
             ("class:toolbar.key", "merge"),
             ("class:toolbar", " join another memory space"),
             ("class:toolbar.sep", "   ·   "),
@@ -640,9 +751,28 @@ def run_tui(ws: Any, ctx: Any) -> None:
         import threading
         import time
 
-        # For local mode, commit in background via REST API
-        if not _is_hosted(ws):
-            threading.Thread(target=_commit_user_message, args=(ws, text), daemon=True).start()
+        # Commit user message to memory (non-blocking for both hosted and local modes)
+        threading.Thread(target=_commit_user_message, args=(ws, text), daemon=True).start()
+
+        # Query memory for context before processing agent interactions
+        def _query_memory_for_context(topic: str) -> list[dict]:
+            if _is_hosted(ws):
+                result = _mcp_call(ws, "engram_query", {"topic": topic, "limit": 10})
+                return (result or {}).get("facts", []) if isinstance(result, dict) else []
+            else:
+                base = _server_url(ws)
+                auth = {}
+                if getattr(ws, "invite_key", ""):
+                    auth["Authorization"] = f"Bearer {ws.invite_key}"
+                status, data = _http_post(
+                    f"{base}/api/query",
+                    {"topic": topic, "limit": 10},
+                    headers=auth,
+                    timeout=10,
+                )
+                if status == 200:
+                    return data.get("facts", []) if isinstance(data, dict) else []
+            return []
 
         def _trigger_scan(a: Application) -> None:
             if state["scanning"] or state["scan_paused"]:
@@ -804,7 +934,21 @@ def run_tui(ws: Any, ctx: Any) -> None:
             output_lines.append(("class:output.error", "  Usage: search <query>\n"))
         elif cmd in _VALID_COMMANDS:
             _run_engram_command(cmd, arg + (" " + extra if extra else ""), output_lines)
+        elif _try_resolve_from_short_input(ws, text, output_lines):
+            # Short input (A/B) matched an open conflict — already handled
+            pass
         else:
+            # Query memory for context before handling agent interactions
+            facts = _query_memory_for_context(text)
+            if facts:
+                output_lines.append(
+                    ("class:output.dim", "  Memory context:\n")
+                )
+                for f in facts[:3]:
+                    content = (f.get("content") or "").strip()[:120]
+                    output_lines.append(("class:output.dim", f"  · {content}\n"))
+                output_lines.append(("class:output.dim", "\n"))
+
             # Unknown command → conversational chat with memory context
             reply = _openai_chat(ws, text, output_lines, history=conversation_history)
             if reply is not None:
@@ -936,9 +1080,6 @@ def run_tui(ws: Any, ctx: Any) -> None:
             app.invalidate()
 
     threading.Thread(target=_blink, daemon=True).start()
-
-    # Load conflicts immediately on startup
-    _load_conflicts(ws, output_lines)
 
     app.run()
 

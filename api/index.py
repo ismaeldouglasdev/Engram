@@ -14,8 +14,8 @@ def _render_landing() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Engram — Shared Memory for Your AI Agents</title>
-  <meta name="description" content="Engram is a shared memory ledger for your team. When one agent learns a fact, every other agent knows it instantly. If they contradict each other, Engram catches it before they break your code.">
+  <title>Engram — Agent Memory</title>
+  <meta name="description" content="Engram is Git for AI memory. It syncs knowledge across agents instantly and flags logic conflicts before they ship.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" onload="this.onload=null;this.rel='stylesheet'">
@@ -593,9 +593,9 @@ def _render_landing() -> str:
 <section class="hero">
   <div class="container">
     <div class="hero-badge"><span class="hero-badge-dot"></span>MCP-compatible · Open source</div>
-    <h1>Shared Memory for Your AI Agents.</h1>
+    <h1>Agent Memory.</h1>
     <p class="subtitle">
-      Engram is "Git for AI memory." It syncs knowledge across agents instantly and flags logic conflicts before they ship. By anchoring every decision to a verified fact, it creates a permanent audit trail that connects agent output to human responsibility.
+      Engram is "Git for AI memory." It syncs knowledge across agents instantly and flags logic conflicts before they ship.
     </p>
     <a href="#install" class="hero-cta">
       Get started
@@ -666,8 +666,7 @@ def _render_landing() -> str:
         <div class="step-content">
           <div class="step-title">Manage memory from your terminal</div>
           <div class="step-desc" style="margin-top:8px;font-size:14px;color:var(--t2);line-height:1.6;">
-            Type <code style="font-family:'JetBrains Mono',monospace;font-size:13px;background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.18);padding:2px 7px;border-radius:5px;color:var(--em4);">engram</code> in any terminal to open the interactive shell.
-            Review open conflicts, search workspace memory, stream live facts, and resolve contradictions — all without leaving your editor.
+            Type <code style="font-family:'JetBrains Mono',monospace;font-size:13px;background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.18);padding:2px 7px;border-radius:5px;color:var(--em4);">engram</code> in any terminal to search memory, stream live facts, and chat with your workspace.
           </div>
           <div class="code-block" style="margin-top:14px;">
             <button class="copy-btn" onclick="copyCode('engram-cmd', event)">Copy</button>
@@ -687,9 +686,9 @@ def _render_landing() -> str:
 <section class="graph-hero reveal" id="dashboard">
   <div class="container" style="text-align:center;">
     <div class="section-label">Dashboard</div>
-    <h2 class="graph-hero-title">View your memory graph</h2>
+    <h2 class="graph-hero-title">Create your workspace</h2>
     <p class="graph-hero-desc">
-      See everything your agents know. Browse facts, resolve conflicts, track agents, and explore lineage chains — all in one place.
+      Set up a shared workspace for your team in seconds. Every agent connects to the same memory automatically.
     </p>
     <a href="/dashboard" class="hero-cta" style="margin-top:32px;">
       Open Dashboard

@@ -4,8 +4,6 @@
 
 **Active memory for your AI agents — outlasting sessions, never sleeping**
 
-Every agent sees the same verified facts. When agents contradict each other, Engram catches it before it becomes a bug.
-
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](./LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-compatible-8b5cf6?style=flat-square)](https://modelcontextprotocol.io)
 [![Python](https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square)](https://python.org)
@@ -18,7 +16,7 @@ Every agent sees the same verified facts. When agents contradict each other, Eng
 
 Your brain never turns off — even when you're asleep, it's consolidating memory, surfacing patterns, preparing for what comes next. Your agents don't work that way. They lose everything the moment a session ends.
 
-Engram changes that. Every agent's messages are committed to active memory as verified facts — and Engram keeps working while you sleep, reading through your codebase, learning what changed, and surfacing contradictions before any agent acts on stale information. The longer it runs, the more it knows. From the moment you install it, Engram is already studying your codebase — mapping what actually exists so your agents never have to start from scratch.
+Engram changes that. Every agent's messages are committed to active memory as verified facts — and Engram keeps working while you sleep, reading through your codebase, learning what changed, and surfacing contradictions before any agent acts on stale information. The longer it runs, the more it knows. From the moment you install it, Engram is already studying your codebase.
 
 You can add team members and every agent on the workspace shares the same memory. Active hours are tiered by plan — see the [pricing page](https://engram-memory.com/dashboard) in your dashboard.
 
@@ -28,11 +26,9 @@ Conflict detection for AI agents is as foundational as accounting was for financ
 
 When agents make consequential decisions, someone has to be accountable. Engram creates a verifiable audit trail — every instruction, every committed fact, every contradiction surfaced — so liability lands on the organizations deploying agents.
 
-### Demo Video
+## North Star
 
-[![Watch the demo](https://img.youtube.com/vi/KFIjxyTO2q4/maxresdefault.jpg)](https://youtu.be/KFIjxyTO2q4)
-
-<video src="docs/demo-video-1.mp4" controls width="100%"></video>
+Zero bugs in AI-assisted development. Every agent shares the same verified truth — contradictions between what agents believe and what the code says are caught before they become bugs.
 
 ---
 
@@ -77,11 +73,9 @@ Once Engram is installed, type `engram` in any terminal to open the interactive 
 engram
 ```
 
-From here you can ask questions or talk to Engram about your workspace and resolve conflicts.
+From here you can ask questions, search memory, and inspect what Engram knows about your workspace.
 
 You can also ask your agent to merge memory spaces — it will pull durable facts from another workspace into this one automatically.
-
-You can also resolve conflicts visually at [engram-memory.com/dashboard](https://engram-memory.com/dashboard).
 
 ---
 
@@ -107,28 +101,17 @@ Facts accumulate. The next time any agent opens this codebase — yours or anyon
 
 ---
 
-## Conflict Detection
+## Conflict Resolution
 
-Every commit triggers conflict detection across the full fact corpus. When two agents have recorded contradictory facts, Engram surfaces the contradiction on the dashboard before either agent acts on stale information.
+Engram detects and resolves conflicts on your behalf — no manual review required.
 
-Engram reads the workspace's commit history as a chronological story and asks: *where would a new agent get confused about what's currently true?* It catches reversals and ambiguity that simple pairwise comparison misses.
+**Agent vs. agent** — Every commit triggers detection across the full fact corpus. When two agents record contradictory facts, Engram resolves the conflict automatically: it uses Claude to evaluate both facts and pick the winner, falling back to a confidence-and-recency heuristic when no API key is configured. The losing fact's validity window is closed so it no longer surfaces in queries.
+
+**Agent vs. codebase** — On startup and every 10 minutes, Engram scans your codebase — config files, dependency manifests, Dockerfiles — and compares what it finds against what agents have committed to memory. When an agent claims the rate limit is 1000 but the config says 500, the stale agent memory is resolved against the ground truth automatically.
+
+Conflicts appear in your dashboard's **Conflicts** tab with the resolution reasoning attached. Nothing sits open waiting for you.
 
 Full design: [`docs/CONFLICT_DETECTIVE.md`](./docs/CONFLICT_DETECTIVE.md)
-
-### Resolving Conflicts
-
-Conflicts are surfaced automatically. You choose how to resolve them.
-
-**Option 1 — Terminal (recommended)**
-
-```bash
-engram
-```
-
-
-**Option 2 — Web dashboard**
-
-Visit [engram-memory.com/dashboard](https://engram-memory.com/dashboard) to review and resolve conflicts in a visual interface — useful when you want to inspect the full fact lineage or manage multiple workspaces at once.
 
 ---
 
@@ -162,26 +145,12 @@ Framework integrations:
 
 ## CLI Reference
 
-Type `engram` in any terminal to open the interactive shell — it opens straight to your open conflicts with a command prompt to resolve them.
+Type `engram` in any terminal to open the interactive shell — search memory, inspect facts, and query what your agents know.
 
 ```bash
 engram                  # Open the interactive shell (conflicts, search, status, and more)
 ```
 
-Individual commands are also available directly:
-
-```bash
-engram conflicts        # List open memory conflicts
-engram search <query>   # Query workspace memory
-engram tail             # Live stream of commits as they happen
-engram merge --source-key <key>  # Merge durable facts from another workspace into this one
-engram status           # Inspect workspace connection and settings
-engram install          # Configure your IDE and install the auto-commit hook
-engram verify           # Check that everything is connected
-engram stats            # Privacy-preserving workspace analytics
-engram import <path>    # Bulk-ingest Markdown/text docs
-engram serve --http     # Run the MCP server locally (port 7474)
-```
 
 ---
 

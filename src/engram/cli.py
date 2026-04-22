@@ -3133,6 +3133,20 @@ def completion(shell: str | None) -> None:
     click.echo(f"Restart your shell or run: source {config_path}")
 
 
+@main.command("join")
+@click.argument("invite_key")
+def join_workspace(invite_key: str) -> None:
+    """Join an existing workspace using an invite key."""
+    from engram.server import engram_join
+
+    result = asyncio.run(engram_join(invite_key))
+    if result.get("status") == "joined":
+        click.echo(f"Successfully joined workspace: {result.get('engram_id', 'unknown')}")
+    else:
+        next_prompt = result.get("next_prompt", "Failed to join workspace")
+        click.echo(f"Error: {next_prompt}", err=True)
+
+
 @main.command("export")
 @click.option(
     "--format", type=click.Choice(["json", "markdown"]), default="json", help="Export format."
