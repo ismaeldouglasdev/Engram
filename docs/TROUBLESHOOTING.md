@@ -162,6 +162,22 @@ The configured backend endpoint is wrong, unavailable, or blocked by network set
 
 ---
 
+## 11. Database connection fails
+
+### Symptom
+Engram fails to connect to the database, or shows "database does not exist" errors.
+
+### Likely cause
+Invalid database URL, missing database, or network connectivity issues.
+
+### Fix
+1. Verify ENGRAM_DB_URL is set correctly.
+2. Confirm the database server is running.
+3. Check that the database user has create permissions on the schema.
+4. For PostgreSQL: ensure the database exists before running Engram.
+
+---
+
 ## 12. Command not recognized
 
 ### Symptom
