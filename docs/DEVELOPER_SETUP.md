@@ -27,7 +27,7 @@ Before you start, make sure you have:
 
 ### 1.1 Fork on GitHub
 
-1. Go to https://github.com/imadahmad9507-ops/Engram
+1. Go to https://github.com/Agentscreator/engram-memory
 2. Click the **Fork** button (top-right corner)
 3. Select your GitHub username as the owner
 4. Click **Create fork**
@@ -46,7 +46,7 @@ Replace \YOUR-USERNAME\ with your actual GitHub username.
 This lets you stay in sync with the main repository:
 
 \\\ash
-git remote add upstream https://github.com/imadahmad9507-ops/Engram.git
+git remote add upstream https://github.com/Agentscreator/engram-memory.git
 git remote -v  # Verify both origin and upstream are configured
 \\\
 
@@ -168,14 +168,14 @@ Make your changes in:
 pytest tests/ --tb=short
 \\\
 
-### 6.3 Check Code Style (Optional)
+### 6.3 Check Code Style
 
-\\\ash
+bash
 # Format code
-black src/engram tests/
+uv run ruff format src/engram tests/
 
 # Check linting
-flake8 src/engram tests/
+uv run ruff check src/engram tests/
 \\\
 
 
